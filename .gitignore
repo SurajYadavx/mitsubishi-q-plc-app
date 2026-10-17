@@ -1,0 +1,50 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments (never commit)
+gateway/.venv/
+gateway/venv/
+*.venv
+venv/
+
+# ─── Secrets (NEVER commit) ───────────────────────────────────────────────────
+.env
+.env.*
+*.env
+*.env.local
+secrets.ini
+**/secrets.ini
+secrets.h
+**/secrets.h
+secrets.*
+!*.example
+*.key
+*.pem
+*.crt
+
+# ─── Arduino / PlatformIO ─────────────────────────────────────────────────────
+.pio/
+firmware/.pio/
+firmware/plc_monitor/.cache/
+
+# ─── IDE / OS ─────────────────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+gateway/logs/
+
+# ─── Node ─────────────────────────────────────────────────────────────────────
+node_modules/
+package-lock.json

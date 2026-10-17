@@ -1,0 +1,8 @@
+# Mitsubishi Q-PLC Gateway - Python dependencies
+# Install inside the virtual environment only:
+#   python -m venv .venv
+#   .venv\Scripts\activate
+#   pip install -r requirements.txt
+
+pymcprotocol>=0.3.0
+pyserial>=3.5

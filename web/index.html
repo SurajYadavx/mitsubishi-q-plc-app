@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Supervisory-grade remote monitoring system for Mitsubishi Q03UDECPU PLC — displays digital I/O device states over secure MQTT WebSockets." />
+  <title>Q-PLC Supervisory Monitor | Mitsubishi Q03UDECPU</title>
+
+  <!-- Google Fonts: Inter (UI) & JetBrains Mono (Telemetry/Tags) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- MQTT.js via CDN (Read-Only WebSocket Client) -->
+  <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+
+  <!-- Prevent theme flash before CSS renders -->
+  <script>
+    (function() {
+      try {
+        var t = localStorage.getItem('qplc_theme');
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.setAttribute('data-theme', t);
+        } else {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+
+  <!-- Relative stylesheet path for GitHub Pages compatibility -->
+  <link rel="stylesheet" href="assets/css/style.css" />
+</head>
+<body>
+
+<!-- ═══ APP HEADER ══════════════════════════════════════════════════════════════ -->
+<header class="app-header" role="banner">
+  <div class="header-inner">
+    <div class="header-brand">
+      <div class="brand-icon" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="2" y="6" width="28" height="20" rx="3" stroke="currentColor" stroke-width="2"/>
+          <rect x="6" y="10" width="4" height="4" rx="1" fill="currentColor"/>
+          <rect x="14" y="10" width="4" height="4" rx="1" fill="currentColor"/>
+          <rect x="22" y="10" width="4" height="4" rx="1" fill="currentColor"/>
+          <rect x="6" y="18" width="4" height="4" rx="1" fill="currentColor" opacity="0.5"/>
+          <rect x="14" y="18" width="4" height="4" rx="1" fill="currentColor" opacity="0.5"/>
+          <rect x="22" y="18" width="4" height="4" rx="1" fill="currentColor" opacity="0.5"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-badge-row">
+          <h1 class="brand-title">Q-PLC Supervisory Monitor</h1>
+          <span class="system-mode-tag" id="header-mode-tag">READ-ONLY</span>
+        </div>
+        <p class="brand-subtitle">Mitsubishi Electric MELSEC-Q (Q03UDECPU) · MC Protocol 3E / TCP</p>
+      </div>
+    </div>
+
+    <!-- Independent Subsystem Telemetry Status Indicators -->
+    <div class="header-status" role="status" aria-live="polite" aria-label="Subsystem status indicators">
+      <div class="status-pill" id="pill-mqtt" title="MQTT Cloud Broker WebSockets connection">
+        <span class="status-dot" id="dot-mqtt" aria-hidden="true"></span>
+        <span class="status-label">BROKER</span>
+        <span class="status-text" id="text-mqtt">Disconnected</span>
+      </div>
+      <div class="status-pill" id="pill-esp" title="NodeMCU ESP8266 IoT Bridge status">
+        <span class="status-dot" id="dot-esp" aria-hidden="true"></span>
+        <span class="status-label">BRIDGE</span>
+        <span class="status-text" id="text-esp">Unknown</span>
+      </div>
+      <div class="status-pill" id="pill-gw" title="Python Gateway host daemon status">
+        <span class="status-dot" id="dot-gw" aria-hidden="true"></span>
+        <span class="status-label">GATEWAY</span>
+        <span class="status-text" id="text-gw">Unknown</span>
+      </div>
+      <div class="status-pill" id="pill-plc" title="Mitsubishi Q-Series PLC MC Protocol TCP link">
+        <span class="status-dot" id="dot-plc" aria-hidden="true"></span>
+        <span class="status-label">PLC</span>
+        <span class="status-text" id="text-plc">Unknown</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Supervisory Navigation Bar -->
+  <nav class="app-nav" aria-label="Main Navigation">
+    <div class="nav-inner">
+      <div class="nav-tabs" role="tablist">
+        <button class="nav-tab active" id="tab-btn-overview" role="tab" aria-selected="true" aria-controls="panel-overview" data-target="overview">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M2 4.25A2.25 2.25 0 014.25 2h11.5A2.25 2.25 0 0118 4.25v2a.75.75 0 01-1.5 0v-2a.75.75 0 00-.75-.75H4.25a.75.75 0 00-.75.75v11.5c0 .414.336.75.75.75h2a.75.75 0 010 1.5h-2A2.25 2.25 0 012 15.75V4.25z"/><path d="M14 8.75a.75.75 0 01.75-.75h3.5a.75.75 0 01.75.75v8.5a2.25 2.25 0 01-2.25 2.25h-6.5a2.25 2.25 0 01-2.25-2.25v-3.5a.75.75 0 011.5 0v3.5c0 .414.336.75.75.75h6.5a.75.75 0 00.75-.75v-8.5a.75.75 0 00-.75-.75h-3.5a.75.75 0 01-.75-.75z"/></svg>
+          Overview
+        </button>
+        <button class="nav-tab" id="tab-btn-io" role="tab" aria-selected="false" aria-controls="panel-io" data-target="io">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 2a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 0110 2zm0 13a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 0110 15zm-8-5a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5h-1.5A.75.75 0 012 10zm13 0a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5h-1.5A.75.75 0 0115 10zM4.343 4.343a.75.75 0 011.061 0l1.06 1.061a.75.75 0 01-1.06 1.06l-1.061-1.06a.75.75 0 010-1.061zm9.193 9.193a.75.75 0 011.06 0l1.061 1.06a.75.75 0 01-1.06 1.061l-1.061-1.06a.75.75 0 010-1.061zm0-9.193a.75.75 0 010 1.06l-1.06 1.061a.75.75 0 11-1.061-1.06l1.06-1.061a.75.75 0 011.061 0zm-9.193 9.193a.75.75 0 010 1.06l-1.06 1.061a.75.75 0 11-1.061-1.06l1.06-1.061a.75.75 0 011.061 0zM10 6a4 4 0 100 8 4 4 0 000-8z" clip-rule="evenodd"/></svg>
+          PLC I/O Monitor
+        </button>
+        <button class="nav-tab" id="tab-btn-events" role="tab" aria-selected="false" aria-controls="panel-events" data-target="events">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clip-rule="evenodd"/></svg>
+          Event Journal
+          <span class="nav-tab-badge" id="nav-event-count">0</span>
+        </button>
+        <button class="nav-tab" id="tab-btn-diag" role="tab" aria-selected="false" aria-controls="panel-diag" data-target="diag">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M2 3.75C2 2.784 2.784 2 3.75 2h12.5c.966 0 1.75.784 1.75 1.75v12.5A1.75 1.75 0 0116.25 18H3.75A1.75 1.75 0 012 16.25V3.75zm3.5 1.5a.75.75 0 00-.75.75v7.5c0 .414.336.75.75.75h9a.75.75 0 00.75-.75V6a.75.75 0 00-.75-.75h-9zm1.5 2h6v2h-6v-2zm0 3.5h6v1.5h-6v-1.5z" clip-rule="evenodd"/></svg>
+          System Diagnostics
+        </button>
+        <button class="nav-tab" id="tab-btn-settings" role="tab" aria-selected="false" aria-controls="panel-settings" data-target="settings">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
+          Settings
+        </button>
+      </div>
+
+      <div class="nav-meta">
+        <button class="btn-theme-toggle" id="btn-theme-toggle" type="button" aria-label="Toggle dark/light visual theme" title="Toggle dark/light visual theme">
+          <svg class="theme-icon theme-icon-sun" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path fill-rule="evenodd" d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" clip-rule="evenodd"/>
+          </svg>
+          <svg class="theme-icon theme-icon-moon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"/>
+          </svg>
+          <span class="theme-toggle-text" id="theme-toggle-text">Dark Theme</span>
+        </button>
+        <span class="nav-freshness-pill" id="freshness-indicator">Data: Idle</span>
+        <span class="nav-age-text" id="header-data-age">Age: —</span>
+      </div>
+    </div>
+  </nav>
+</header>
+
+<!-- ═══ SYSTEM BANNERS ══════════════════════════════════════════════════════════ -->
+<div class="banner-stack" id="banner-container">
+  <!-- Stale Telemetry Alert Banner -->
+  <div class="stale-banner" id="stale-banner" role="alert" aria-live="assertive" hidden>
+    <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
+    <div class="banner-text-block">
+      <strong>TELEMETRY STALE:</strong>
+      <span id="stale-banner-text">No live updates received for &gt;15 seconds. Displayed values represent historical state.</span>
+    </div>
+  </div>
+
+  <!-- Demo Simulation Banner & Scenario Controller -->
+  <div class="demo-banner" id="demo-banner" role="status" aria-live="polite" hidden>
+    <div class="demo-banner-top">
+      <div class="demo-banner-info">
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"/></svg>
+        <div class="banner-text-block">
+          <strong>OFFLINE DEMO SIMULATION ACTIVE:</strong>
+          <span id="demo-banner-caption">Deterministic synthetic telemetry active (X3 input pulse driving Y20 coil). No physical PLC connected.</span>
+        </div>
+      </div>
+      <div class="demo-banner-actions">
+        <button class="btn btn-demo-action" id="btn-demo-pause" aria-label="Pause or resume demo telemetry">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12" aria-hidden="true"><path fill-rule="evenodd" d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zm7 0a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z" clip-rule="evenodd"/></svg>
+          <span id="demo-pause-text">Pause</span>
+        </button>
+        <button class="btn btn-demo-action" id="btn-demo-reset" aria-label="Reset simulation cycle">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12" aria-hidden="true"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
+          Reset
+        </button>
+      </div>
+    </div>
+
+    <!-- Simulation Scenario Control Bar -->
+    <div class="demo-scenario-bar" role="group" aria-label="Simulated communication scenarios">
+      <span class="demo-scenario-label">Inject Scenario:</span>
+      <div class="demo-scenario-buttons">
+        <button class="demo-scenario-pill active" id="btn-scenario-normal" data-scenario="normal" aria-pressed="true">
+          Normal (2s Cycle)
+        </button>
+        <button class="demo-scenario-pill" id="btn-scenario-delayed" data-scenario="delayed" aria-pressed="false" title="Simulate transmission jitter with 8-second delay">
+          Delayed Telemetry (8s)
+        </button>
+        <button class="demo-scenario-pill" id="btn-scenario-gap" data-scenario="seq_gap" aria-pressed="false" title="Inject sequence gap (+3 missing frames)">
+          Sequence Gap (+3)
+        </button>
+        <button class="demo-scenario-pill" id="btn-scenario-stale" data-scenario="stale" aria-pressed="false" title="Halt telemetry to trigger stale data warning after 15s">
+          Stale Data (&gt;15s)
+        </button>
+        <button class="demo-scenario-pill" id="btn-scenario-fault" data-scenario="gw_fault" aria-pressed="false" title="Simulate gateway connection fault and automatic recovery">
+          Gateway Fault &amp; Recovery
+        </button>
+      </div>
+      <span class="demo-scenario-badge" id="demo-scenario-badge">Scenario: Normal</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MAIN APPLICATION WORKSPACE ══════════════════════════════════════════════ -->
+<main class="app-main" id="main-content">
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════
+       TAB 1: OVERVIEW (Supervisory At-a-Glance Dashboard)
+       ═══════════════════════════════════════════════════════════════════════════ -->
+  <section class="tab-panel active" id="panel-overview" role="tabpanel" aria-labelledby="tab-btn-overview">
+    
+    <!-- Subsystem Health Matrix -->
+    <div class="card overview-card">
+      <div class="card-header">
+        <h2 class="card-title">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-11.25a.75.75 0 00-1.5 0v2.5h-2.5a.75.75 0 000 1.5h2.5v2.5a.75.75 0 001.5 0v-2.5h2.5a.75.75 0 000-1.5h-2.5v-2.5z" clip-rule="evenodd"/></svg>
+          Subsystem Telemetry Health Matrix
+        </h2>
+        <span class="card-header-note">ISA-101 Situational Awareness — Independent Subsystem States</span>
+      </div>
+
+      <div class="subsystem-grid">
+        <!-- PLC Subsystem -->
+        <div class="subsystem-node" id="subsystem-plc">
+          <div class="node-header">
+            <span class="node-title">Mitsubishi PLC</span>
+            <span class="node-badge" id="badge-subsystem-plc">UNKNOWN</span>
+          </div>
+          <div class="node-body">
+            <p class="node-spec">Hardware: <strong>Q03UDECPU</strong></p>
+            <p class="node-spec">Protocol: <strong>MC 3E / TCP</strong></p>
+            <p class="node-detail" id="detail-subsystem-plc">Link not verified</p>
+          </div>
+        </div>
+
+        <!-- Python Gateway Host -->
+        <div class="subsystem-node" id="subsystem-gw">
+          <div class="node-header">
+            <span class="node-title">Host Gateway Daemon</span>
+            <span class="node-badge" id="badge-subsystem-gw">UNKNOWN</span>
+          </div>
+          <div class="node-body">
+            <p class="node-spec">Host: <strong>gateway.py</strong></p>
+            <p class="node-spec">Port: <strong>COM9 @ 115.2k</strong></p>
+            <p class="node-detail" id="detail-subsystem-gw">Awaiting serial stream</p>
+          </div>
+        </div>
+
+        <!-- NodeMCU Bridge -->
+        <div class="subsystem-node" id="subsystem-esp">
+          <div class="node-header">
+            <span class="node-title">Edge IoT Bridge</span>
+            <span class="node-badge" id="badge-subsystem-esp">UNKNOWN</span>
+          </div>
+          <div class="node-body">
+            <p class="node-spec">Device: <strong>NodeMCU ESP8266</strong></p>
+            <p class="node-spec">Uplink: <strong>Wi-Fi / TLS 1.2</strong></p>
+            <p class="node-detail" id="detail-subsystem-esp">No heartbeat received</p>
+          </div>
+        </div>
+
+        <!-- MQTT Broker -->
+        <div class="subsystem-node" id="subsystem-mqtt">
+          <div class="node-header">
+            <span class="node-title">Cloud MQTT Broker</span>
+            <span class="node-badge" id="badge-subsystem-mqtt">OFFLINE</span>
+          </div>
+          <div class="node-body">
+            <p class="node-spec">Protocol: <strong>WSS Port 8884</strong></p>
+            <p class="node-spec">Channel: <strong>plcmon/# (Read-Only)</strong></p>
+            <p class="node-detail" id="detail-subsystem-mqtt">Client disconnected</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry Freshness & Overview Counters -->
+    <div class="meta-row" aria-label="System telemetry telemetry metrics">
+      <div class="card meta-card">
+        <p class="meta-key">Data Freshness</p>
+        <p class="meta-val highlight" id="meta-freshness-state">IDLE</p>
+        <span class="meta-subtext" id="meta-freshness-sub">No stream active</span>
+      </div>
+      <div class="card meta-card">
+        <p class="meta-key">Telemetry Age</p>
+        <p class="meta-val mono" id="meta-data-age">—</p>
+        <span class="meta-subtext">Stale threshold: 15s</span>
+      </div>
+      <div class="card meta-card">
+        <p class="meta-key">Last Poll (UTC)</p>
+        <p class="meta-val mono" id="meta-last-ts">—</p>
+        <span class="meta-subtext">ISO-8601 Timestamp</span>
+      </div>
+      <div class="card meta-card">
+        <p class="meta-key">Sequence Number</p>
+        <p class="meta-val mono" id="meta-seq">—</p>
+        <span class="meta-subtext" id="meta-seq-health">Monotonic tracking</span>
+      </div>
+      <div class="card meta-card">
+        <p class="meta-key">Gateway ID</p>
+        <p class="meta-val mono" id="meta-gateway-id">—</p>
+        <span class="meta-subtext">Configured endpoint</span>
+      </div>
+      <div class="card meta-card">
+        <p class="meta-key">Active Points</p>
+        <p class="meta-val" id="meta-active-count">0 / 16 Active</p>
+        <span class="meta-subtext" id="meta-unknown-count">0 unknown</span>
+      </div>
+    </div>
+
+    <!-- Verified Ladder Contact Status Card -->
+    <div class="card ladder-summary-card">
+      <div class="card-header">
+        <div class="ladder-header-title-group">
+          <h2 class="card-title">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z" clip-rule="evenodd"/></svg>
+            Verified Ladder Program Logic Tracking
+          </h2>
+          <span class="ladder-mnemonic-tag">Rung 0001: <code>LD X003</code> &rarr; <code>OUT Y020</code></span>
+        </div>
+        <div class="ladder-header-badges">
+          <span class="status-verified-badge">GX Works2 Verified</span>
+          <span class="ladder-mode-badge" id="ladder-mode-badge">AWAITING TELEMETRY</span>
+        </div>
+      </div>
+      <div class="ladder-diagram-flow">
+        <div class="ladder-rung-visual" role="region" aria-label="Ladder logic diagram for rung 0001">
+          <div class="ladder-power-rail rail-left" title="Left Power Rail (+24VDC / Line)">
+            <span class="rail-label">+24V</span>
+          </div>
+          <div class="ladder-wire-segment left-wire"></div>
+          <div class="ladder-element contact-elem" id="ladder-x3-elem" data-state="unknown">
+            <span class="ladder-elem-tag">X3</span>
+            <span class="ladder-elem-symbol" id="ladder-x3-symbol">──[ ⊣ ⊢ ]──</span>
+            <span class="ladder-elem-desc">Input Contact (Hex 0x03)</span>
+            <span class="ladder-elem-state" id="ladder-x3-state">UNKNOWN</span>
+          </div>
+          <div class="ladder-flow-line" id="ladder-flow-line">
+            <span class="flow-indicator-text" id="ladder-flow-text">Logic Rung 1</span>
+          </div>
+          <div class="ladder-element coil-elem" id="ladder-y20-elem" data-state="unknown">
+            <span class="ladder-elem-tag">Y20</span>
+            <span class="ladder-elem-symbol" id="ladder-y20-symbol">──( )──</span>
+            <span class="ladder-elem-desc">Output Coil (Hex 0x20)</span>
+            <span class="ladder-elem-state" id="ladder-y20-state">UNKNOWN</span>
+          </div>
+          <div class="ladder-wire-segment right-wire"></div>
+          <div class="ladder-power-rail rail-right" title="Right Power Rail (0VDC / Neutral)">
+            <span class="rail-label">0V</span>
+          </div>
+        </div>
+        <div class="ladder-footer-meta">
+          <div class="ladder-rung-status-indicator" id="ladder-rung-status">
+            <span class="status-dot dot-warn" id="ladder-rung-dot"></span>
+            <span id="ladder-rung-status-text">Logic Continuity: Unknown / Awaiting Telemetry</span>
+          </div>
+          <p class="ladder-caption">
+            <strong>Engineering Supervisory Note:</strong> Illustrative representation of verified ladder logic extracted from the GX Works2 project. Contact <code>X3</code> energizes output coil <code>Y20</code> autonomously inside the Mitsubishi Q03UDECPU scan cycle. Web client is strictly read-only and cannot force contacts or coils.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Activity Teaser -->
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clip-rule="evenodd"/></svg>
+          Recent Supervisory Events
+        </h2>
+        <button class="btn btn-ghost btn-sm" id="btn-goto-events" aria-label="Open full event journal">Open Event Journal →</button>
+      </div>
+      <ul class="mini-event-list" id="mini-event-list">
+        <li class="mini-event-empty">No supervisory events logged yet. Connect or activate Demo mode.</li>
+      </ul>
+    </div>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════
+       TAB 2: PLC I/O MONITOR (Grid & Engineering Table Views)
+       ═══════════════════════════════════════════════════════════════════════════ -->
+  <section class="tab-panel" id="panel-io" role="tabpanel" aria-labelledby="tab-btn-io">
+    
+    <!-- I/O View Toolbar -->
+    <div class="io-toolbar">
+      <div class="io-toolbar-left">
+        <div class="view-mode-toggle" role="group" aria-label="I/O Display Format">
+          <button class="view-btn active" id="btn-view-cards" aria-pressed="true" title="Card Grid View">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+            Card Grid
+          </button>
+          <button class="view-btn" id="btn-view-table" aria-pressed="false" title="Engineering Table View">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M2 4.75A.75.75 0 012.75 4h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 4.75zm0 10.5a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75a.75.75 0 01-.75-.75zM2 10a.75.75 0 01.75-.75h14.5a.75.75 0 010 1.5H2.75A.75.75 0 012 10z" clip-rule="evenodd"/></svg>
+            Engineering Table
+          </button>
+        </div>
+
+        <div class="io-filter-group" role="group" aria-label="Filter devices by state">
+          <span class="filter-group-label">Filter:</span>
+          <button class="filter-pill active" data-io-filter="all" aria-pressed="true">All (16)</button>
+          <button class="filter-pill" data-io-filter="on" aria-pressed="false">Active ON</button>
+          <button class="filter-pill" data-io-filter="off" aria-pressed="false">Inactive OFF</button>
+          <button class="filter-pill" data-io-filter="unknown" aria-pressed="false">Unknown / Fault</button>
+        </div>
+      </div>
+
+      <div class="io-toolbar-right">
+        <span class="read-only-indicator">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clip-rule="evenodd"/></svg>
+          Strictly Read-Only (Control Disabled)
+        </span>
+      </div>
+    </div>
+
+    <!-- Verified Ladder Logic Reference Banner -->
+    <div class="card ladder-io-card" id="ladder-io-card" role="region" aria-label="Verified Ladder Logic Rung Reference">
+      <div class="ladder-io-header">
+        <div class="ladder-io-title-wrap">
+          <span class="status-verified-badge">Verified Rung Logic</span>
+          <span class="ladder-io-title">Rung 0001: Contact <code>X3</code> (Pushbutton) &rarr; Coil <code>Y20</code> (Master Relay)</span>
+        </div>
+        <span class="ladder-mode-badge" id="ladder-io-mode-badge">AWAITING TELEMETRY</span>
+      </div>
+      <div class="ladder-io-body">
+        <div class="ladder-rung-visual ladder-rung-compact">
+          <div class="ladder-power-rail rail-left" title="Left Power Rail (+24VDC)">
+            <span class="rail-label">+24V</span>
+          </div>
+          <div class="ladder-wire-segment left-wire"></div>
+          <div class="ladder-element contact-elem" id="ladder-io-x3-elem" data-state="unknown">
+            <span class="ladder-elem-tag">X3</span>
+            <span class="ladder-elem-symbol" id="ladder-io-x3-symbol">──[ ⊣ ⊢ ]──</span>
+            <span class="ladder-elem-desc">Input Contact (0x03)</span>
+            <span class="ladder-elem-state" id="ladder-io-x3-state">UNKNOWN</span>
+          </div>
+          <div class="ladder-flow-line" id="ladder-io-flow-line">
+            <span class="flow-indicator-text" id="ladder-io-flow-text">Scan Flow</span>
+          </div>
+          <div class="ladder-element coil-elem" id="ladder-io-y20-elem" data-state="unknown">
+            <span class="ladder-elem-tag">Y20</span>
+            <span class="ladder-elem-symbol" id="ladder-io-y20-symbol">──( )──</span>
+            <span class="ladder-elem-desc">Output Coil (0x20)</span>
+            <span class="ladder-elem-state" id="ladder-io-y20-state">UNKNOWN</span>
+          </div>
+          <div class="ladder-wire-segment right-wire"></div>
+          <div class="ladder-power-rail rail-right" title="Right Power Rail (0VDC)">
+            <span class="rail-label">0V</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CARD GRID VIEW ────────────────────────────────────────────────── -->
+    <div class="io-view-container" id="io-container-cards">
+      <div class="io-grid">
+        <!-- INPUTS (X0-X7) -->
+        <section class="card io-card" aria-labelledby="inputs-heading">
+          <div class="card-header">
+            <h2 id="inputs-heading" class="card-title io-title io-title--input">
+              <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.25a.75.75 0 010 1.08l-5.5 5.25a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z" clip-rule="evenodd"/></svg>
+              Digital Inputs
+            </h2>
+            <span class="io-range-badge">X0 – X7 (Hex 0x00–0x07)</span>
+          </div>
+          <div class="device-grid" id="inputs-grid" role="list" aria-label="PLC input device states">
+            <!-- Populated dynamically by app.js -->
+          </div>
+        </section>
+
+        <!-- OUTPUTS (Y20-Y27) -->
+        <section class="card io-card" aria-labelledby="outputs-heading">
+          <div class="card-header">
+            <h2 id="outputs-heading" class="card-title io-title io-title--output">
+              <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clip-rule="evenodd"/></svg>
+              Digital Outputs
+            </h2>
+            <span class="io-range-badge">Y20 – Y27 (Hex 0x20–0x27)</span>
+          </div>
+          <div class="device-grid" id="outputs-grid" role="list" aria-label="PLC output device states">
+            <!-- Populated dynamically by app.js -->
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- ── COMPACT ENGINEERING TABLE VIEW ────────────────────────────────── -->
+    <div class="io-view-container" id="io-container-table" hidden>
+      <div class="card table-card">
+        <div class="card-header">
+          <h2 class="card-title">Supervisory Channel Diagnostics Table</h2>
+          <span class="card-header-note">16 Configured Device Points</span>
+        </div>
+        <div class="table-responsive">
+          <table class="eng-table" id="io-table" aria-label="PLC Input and Output telemetry table">
+            <thead>
+              <tr>
+                <th scope="col">Point</th>
+                <th scope="col">Hex Addr</th>
+                <th scope="col">Type</th>
+                <th scope="col">Engineering Description / Ladder Assignment</th>
+                <th scope="col">Current State</th>
+                <th scope="col">Raw Bit</th>
+                <th scope="col">Visual Level</th>
+                <th scope="col">Last Update</th>
+              </tr>
+            </thead>
+            <tbody id="io-table-body">
+              <!-- Populated dynamically by app.js -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════
+       TAB 3: EVENT JOURNAL (Filtering, Search, Export)
+       ═══════════════════════════════════════════════════════════════════════════ -->
+  <section class="tab-panel" id="panel-events" role="tabpanel" aria-labelledby="tab-btn-events">
+    
+    <div class="card history-card">
+      <div class="card-header">
+        <div class="card-header-title-group">
+          <h2 class="card-title">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.75-13a.75.75 0 00-1.5 0v5c0 .414.336.75.75.75h4a.75.75 0 000-1.5h-3.25V5z" clip-rule="evenodd"/></svg>
+            Supervisory Event & Diagnostic Journal
+          </h2>
+          <span class="history-count badge" id="history-count" aria-label="Total events count">0</span>
+        </div>
+        <div class="card-header-actions">
+          <button id="btn-export-csv" class="btn btn-secondary btn-sm" title="Export event log as CSV for shift handover reports">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M4.5 2A1.5 1.5 0 003 3.5v13A1.5 1.5 0 004.5 18h11a1.5 1.5 0 001.5-1.5V7.621a1.5 1.5 0 00-.44-1.06l-4.12-4.122A1.5 1.5 0 0011.378 2H4.5zm4.75 6.75a.75.75 0 011.5 0v3.44l1.22-1.22a.75.75 0 111.06 1.06l-2.5 2.5a.75.75 0 01-1.06 0l-2.5-2.5a.75.75 0 111.06-1.06l1.22 1.22V8.75z" clip-rule="evenodd"/></svg>
+            Export CSV
+          </button>
+          <button id="btn-clear-history" class="btn btn-ghost btn-sm" aria-label="Clear event journal">Clear</button>
+        </div>
+      </div>
+
+      <!-- Filters & Live Search Toolbar -->
+      <div class="event-journal-toolbar">
+        <div class="journal-search-wrap">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="search-icon"><path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/></svg>
+          <input type="text" id="input-event-search" placeholder="Filter by device (e.g. X3), message, or keyword…" autocomplete="off" />
+        </div>
+
+        <div class="journal-filters">
+          <!-- Category Filter -->
+          <div class="filter-button-group" role="group" aria-label="Filter events by category">
+            <span class="filter-group-title">Category:</span>
+            <button class="filter-btn active" data-filter="all" aria-pressed="true">All</button>
+            <button class="filter-btn" data-filter="state_change" aria-pressed="false">I/O Changes</button>
+            <button class="filter-btn" data-filter="comm_error" aria-pressed="false">Comms Faults</button>
+            <button class="filter-btn" data-filter="system" aria-pressed="false">System</button>
+          </div>
+
+          <!-- Severity Filter -->
+          <div class="filter-button-group" role="group" aria-label="Filter events by severity">
+            <span class="filter-group-title">Severity:</span>
+            <button class="filter-btn-sev active" data-severity="all" aria-pressed="true">All</button>
+            <button class="filter-btn-sev" data-severity="info" aria-pressed="false">Info</button>
+            <button class="filter-btn-sev" data-severity="warn" aria-pressed="false">Warning</button>
+            <button class="filter-btn-sev" data-severity="error" aria-pressed="false">Error</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Event Stream List -->
+      <div class="journal-list-wrap">
+        <ol class="history-list" id="history-list" aria-label="Event journal entries" reversed>
+          <li class="history-empty" id="history-empty">No events matching criteria — connect or start Demo mode.</li>
+        </ol>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════
+       TAB 4: SYSTEM DIAGNOSTICS (Technical Specifications & Signal Path)
+       ═══════════════════════════════════════════════════════════════════════════ -->
+  <section class="tab-panel" id="panel-diag" role="tabpanel" aria-labelledby="tab-btn-diag">
+    
+    <div class="diag-layout">
+      <!-- Communication Telemetry Counters -->
+      <div class="card diag-card">
+        <div class="card-header">
+          <h2 class="card-title">Telemetry Engine Diagnostics</h2>
+          <span class="card-header-note">Session Runtime Counters</span>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-box">
+            <span class="stat-num" id="stat-packets-received">0</span>
+            <span class="stat-lbl">Telemetry Frames</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="stat-heartbeats">0</span>
+            <span class="stat-lbl">Heartbeat Pulses</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="stat-seq-gaps">0</span>
+            <span class="stat-lbl">Sequence Gaps</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="stat-discarded">0</span>
+            <span class="stat-lbl">Discarded / Corrupt</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="stat-state-changes">0</span>
+            <span class="stat-lbl">State Transitions</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="stat-reconnects">0</span>
+            <span class="stat-lbl">Broker Reconnects</span>
+          </div>
+        </div>
+
+        <div class="diag-detail-list">
+          <div class="diag-row">
+            <span class="diag-key">Last Reported Fault:</span>
+            <span class="diag-val" id="diag-last-fault">None logged</span>
+          </div>
+          <div class="diag-row">
+            <span class="diag-key">Subscribed Topic Tree:</span>
+            <span class="diag-val mono" id="diag-subscribed-topic">plcmon/plc-gw-01/#</span>
+          </div>
+          <div class="diag-row">
+            <span class="diag-key">Client Session ID:</span>
+            <span class="diag-val mono" id="diag-client-id">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Technical Architecture Specification -->
+      <div class="card diag-card">
+        <div class="card-header">
+          <h2 class="card-title">Industrial Architecture & Signal Flow</h2>
+          <span class="status-verified-badge">5-Tier Architecture</span>
+        </div>
+
+        <div class="signal-flow-container">
+          <div class="flow-step">
+            <div class="flow-step-num">1</div>
+            <div class="flow-step-body">
+              <strong>Mitsubishi Electric Q03UDECPU</strong>
+              <p>Industrial PLC controller running autonomous ladder scan. Built-in 100BASE-TX Ethernet port configured at <code>192.168.3.39:5010</code>. Serves MC Protocol Type 3E binary frames.</p>
+            </div>
+          </div>
+          <div class="flow-step">
+            <div class="flow-step-num">2</div>
+            <div class="flow-step-body">
+              <strong>Host Gateway Daemon (Windows Laptop)</strong>
+              <p>Python 3 <code>gateway.py</code> issuing read-only command <code>0x0401</code> (Batch Read Bit Units). Enforces zero writes. Encapsulates telemetry into newline-delimited JSON over USB COM9.</p>
+            </div>
+          </div>
+          <div class="flow-step">
+            <div class="flow-step-num">3</div>
+            <div class="flow-step-body">
+              <strong>Edge Microcontroller Bridge (NodeMCU ESP8266)</strong>
+              <p>Arduino C++ firmware <code>plc_monitor.ino</code> reading serial at 115200 baud. Asynchronous Wi-Fi connection with TLS 1.2 client publishing to HiveMQ Cloud.</p>
+            </div>
+          </div>
+          <div class="flow-step">
+            <div class="flow-step-num">4</div>
+            <div class="flow-step-body">
+              <strong>Cloud MQTT Broker (HiveMQ Cloud)</strong>
+              <p>Secure managed broker publishing on <code>plcmon/plc-gw-01/telemetry</code>. Read-only subscriber ACL prevents browser write injection.</p>
+            </div>
+          </div>
+          <div class="flow-step">
+            <div class="flow-step-num">5</div>
+            <div class="flow-step-body">
+              <strong>Supervisory Web Client (GitHub Pages)</strong>
+              <p>Zero-dependency HTML5/CSS/JavaScript application subscribed over secure WebSockets (<code>wss://</code>). Validates payload schemas, monotonic sequence numbers, and displays ISA-101 HMI.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════════
+       TAB 5: SETTINGS & CONNECTION (Safe Local Configuration)
+       ═══════════════════════════════════════════════════════════════════════════ -->
+  <section class="tab-panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-btn-settings">
+    
+    <div class="settings-layout">
+      <!-- MQTT Connection Form -->
+      <section class="card settings-card" aria-labelledby="settings-heading">
+        <div class="card-header">
+          <h2 id="settings-heading" class="card-title">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
+            MQTT Broker Connection Parameters
+          </h2>
+          <span class="card-header-note">Browser WebSocket Subscriber</span>
+        </div>
+
+        <div class="settings-grid">
+          <div class="form-group span-2">
+            <label for="input-broker-url">Broker WebSocket URL (WSS)</label>
+            <input type="text" id="input-broker-url"
+                   placeholder="wss://xxxx.s1.eu.hivemq.cloud:8884/mqtt"
+                   aria-describedby="broker-url-hint" autocomplete="off" />
+            <p id="broker-url-hint" class="form-hint">Use WSS URL on port 8884 for HiveMQ Cloud serverless clusters.</p>
+          </div>
+          <div class="form-group">
+            <label for="input-broker-user">Read-Only Username</label>
+            <input type="text" id="input-broker-user"
+                   placeholder="browser_readonly_user"
+                   autocomplete="username" />
+            <p class="form-hint">User must have subscribe-only permission.</p>
+          </div>
+          <div class="form-group">
+            <label for="input-broker-pass">Password</label>
+            <input type="password" id="input-broker-pass"
+                   placeholder="••••••••"
+                   autocomplete="current-password" />
+            <p class="form-hint">Never persisted in browser storage.</p>
+          </div>
+          <div class="form-group span-2">
+            <label for="input-topic-prefix">Telemetry Topic Prefix</label>
+            <input type="text" id="input-topic-prefix"
+                   value="plcmon/plc-gw-01"
+                   aria-describedby="topic-hint" />
+            <p id="topic-hint" class="form-hint">Subscribes to <code>&lt;prefix&gt;/#</code> to ingest telemetry, status, and diagnostic streams.</p>
+          </div>
+        </div>
+
+        <div class="settings-actions">
+          <button id="btn-connect" class="btn btn-primary" aria-controls="pill-mqtt">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z"/></svg>
+            Connect to Broker
+          </button>
+          <button id="btn-disconnect" class="btn btn-secondary" disabled aria-controls="pill-mqtt">
+            Disconnect
+          </button>
+        </div>
+
+        <div class="security-disclosure-box">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd"/></svg>
+          <div>
+            <strong>Industrial Security &amp; Public Client Policy:</strong>
+            <p>Non-sensitive configuration (URL, username, topic) is saved to <code>localStorage</code> for operator convenience. <strong>Passwords are never saved</strong> to storage and exist only in transient browser memory during connection.</p>
+            <p style="margin-top:0.4rem; font-size:0.8rem; color:var(--text-muted);">
+              <strong>Public-Client Constraint:</strong> In browser-based web applications, client-side MQTT credentials cannot be kept secret from inspection. Website users must utilize dedicated broker accounts configured with strictly limited, read-only topic permissions (e.g. Subscribe only to <code>plcmon/plc-gw-01/#</code>) with zero publish or broker administrative access.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Workstation Visual Theme -->
+      <section class="card settings-card" aria-labelledby="theme-heading">
+        <div class="card-header">
+          <h2 id="theme-heading" class="card-title">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 0110 2zm0 13a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 0110 15zm-8-5a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5h-1.5A.75.75 0 012 10zm13 0a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5h-1.5A.75.75 0 0115 10zM4.343 4.343a.75.75 0 011.061 0l1.06 1.061a.75.75 0 01-1.06 1.06l-1.061-1.06a.75.75 0 010-1.061zm9.193 9.193a.75.75 0 011.06 0l1.061 1.06a.75.75 0 01-1.06 1.061l-1.061-1.06a.75.75 0 010-1.061zm0-9.193a.75.75 0 010 1.06l-1.06 1.061a.75.75 0 11-1.061-1.06l1.06-1.061a.75.75 0 011.061 0zm-9.193 9.193a.75.75 0 010 1.06l-1.06 1.061a.75.75 0 11-1.061-1.06l1.06-1.061a.75.75 0 011.061 0zM10 6a4 4 0 100 8 4 4 0 000-8z"/></svg>
+            Workstation Visual Theme
+          </h2>
+          <span class="card-header-note">Industrial Supervisory Appearance</span>
+        </div>
+        <div class="theme-selector-group" role="radiogroup" aria-label="Select workstation visual theme">
+          <label class="theme-choice-card" for="theme-radio-dark">
+            <input type="radio" name="opt-theme" id="theme-radio-dark" value="dark" checked />
+            <div class="theme-choice-body">
+              <div class="theme-choice-header">
+                <strong>Dark Slate Theme</strong>
+                <span class="theme-choice-tag">Standard Default</span>
+              </div>
+              <p class="theme-choice-desc">Low-glare supervisory workstation theme for 24/7 industrial control rooms.</p>
+            </div>
+          </label>
+          <label class="theme-choice-card" for="theme-radio-light">
+            <input type="radio" name="opt-theme" id="theme-radio-light" value="light" />
+            <div class="theme-choice-body">
+              <div class="theme-choice-header">
+                <strong>Light Industrial Theme</strong>
+                <span class="theme-choice-tag">High Contrast</span>
+              </div>
+              <p class="theme-choice-desc">High-contrast slate/steel theme for bright ambient lighting and field inspections.</p>
+            </div>
+          </label>
+        </div>
+      </section>
+
+      <!-- Offline Demo Mode & Safety Disclaimers -->
+      <section class="card settings-card">
+        <div class="card-header">
+          <h2 class="card-title">Offline Simulation & Mode Management</h2>
+          <span class="card-header-note">Verification Harness</span>
+        </div>
+
+        <div class="demo-card-body">
+          <div class="demo-mode-control-block">
+            <div class="demo-switch-wrap">
+              <input type="checkbox" id="chk-demo" class="demo-checkbox-custom" />
+              <label for="chk-demo" class="demo-switch-label">
+                <span class="demo-badge">DEMO SIMULATION</span>
+                <span class="demo-switch-text">Toggle Offline Demonstration Mode</span>
+              </label>
+            </div>
+            <p class="demo-explainer">
+              Generates deterministic telemetry pulses every 2 seconds, cycling the <code>X3</code> input contact and driving <code>Y20</code> in synchronization to simulate the real ladder program.
+            </p>
+
+            <div class="form-group demo-scenario-form-group">
+              <label for="select-demo-scenario">Active Demo Simulation Scenario</label>
+              <select id="select-demo-scenario" class="select-industrial">
+                <option value="normal">Normal Telemetry (2-second cycle, X3 pulse driving Y20)</option>
+                <option value="delayed">Delayed Telemetry (8-second jitter / latency warning)</option>
+                <option value="seq_gap">Sequence Gap Anomaly (+3 dropped packets detection)</option>
+                <option value="stale">Stale Data Warning (>15s timeout with alert banner)</option>
+                <option value="gw_fault">Gateway Connection Fault (Simulated COM9 error &amp; recovery)</option>
+              </select>
+              <p class="form-hint">Inject communication scenarios to verify frontend fault handling without physical hardware.</p>
+            </div>
+          </div>
+
+          <div class="safety-advisory-block">
+            <h4>Supervisory Scope Disclaimer</h4>
+            <ul>
+              <li>This application is strictly a <strong>passive telemetry monitor</strong>.</li>
+              <li>It contains no capability to alter ladder logic, force contacts, or cycle output relays.</li>
+              <li>Settings configured on this page apply exclusively to the local web browser client. They do not alter PLC network registers or remote daemon parameters.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </div>
+
+  </section>
+
+</main>
+
+<!-- ═══ FOOTER ══════════════════════════════════════════════════════════════════ -->
+<footer class="app-footer" role="contentinfo">
+  <div class="footer-inner">
+    <div class="footer-left">
+      <p class="footer-note">
+        <strong>Mitsubishi Q-Series PLC Remote Monitoring System</strong> · Target: Q03UDECPU · MC Protocol 3E Binary
+      </p>
+      <p class="footer-note">
+        Strictly Read-Only Client. Ladder rung <code>X3 → Y20</code> runs autonomously in the physical PLC CPU.
+      </p>
+    </div>
+    <div class="footer-right">
+      <span class="footer-status-tag">Read-Only Enforced</span>
+    </div>
+  </div>
+</footer>
+
+<!-- Main Application Logic (Relative Path) -->
+<script src="assets/js/app.js"></script>
+</body>
+</html>

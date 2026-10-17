@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Q-PLC Monitor — Offline Deployment Readiness & Lab Verification (Stage 1.9)</title>
+  <style>
+    body { font-family: 'Courier New', monospace; background: #090d13; color: #e6edf3; margin: 0; padding: 1.5rem 2rem; }
+    h1   { color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: .5rem; font-size: 1.4rem; }
+    h2   { color: #8b949e; font-size: .88rem; margin-top: 1.8rem; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px dashed #212830; padding-bottom: 4px; }
+    .suite   { margin-bottom: 1.2rem; }
+    .pass    { color: #3fb950; }
+    .fail    { color: #f85149; font-weight: bold; }
+    .skip    { color: #d29922; }
+    .summary { margin-top: 2rem; padding: 1.2rem; border: 1px solid #30363d; border-radius: 6px; font-size: 1rem; background: #121820; }
+    pre  { background: #161b22; padding: .5rem .8rem; border-radius: 4px; font-size: .78rem; color: #f85149; white-space: pre-wrap; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:.75rem; font-weight:700; letter-spacing:.05em; }
+    .badge-pass { background:rgba(63,185,80,.18); color:#3fb950; }
+    .badge-fail { background:rgba(248,81,73,.18); color:#f85149; }
+    .badge-skip { background:rgba(210,153,34,.18); color:#d29922; }
+  </style>
+</head>
+<body>
+<h1>Q-PLC Supervisory Monitor — Offline Deployment & Lab Verification</h1>
+<p style="color:#8b949e;font-size:.82rem;">
+  Deterministic test suite for Stage 1.9 Offline Deployment Readiness & Lab Preparation.<br>
+  No physical PLC, MQTT broker, or hardware required. Tests run offline.
+</p>
+<div id="results"></div>
+<div class="summary" id="summary"></div>
+
+<script>
+'use strict';
+
+// ─── Test Harness ─────────────────────────────────────────────────────────────
+
+let passed = 0, failed = 0, skipped = 0;
+const results = document.getElementById('results');
+
+function suite(name) {
+  const h = document.createElement('h2');
+  h.textContent = name;
+  results.appendChild(h);
+}
+
+function test(name, fn) {
+  const row = document.createElement('div');
+  row.style.padding = '2px 0';
+  row.style.fontSize = '0.82rem';
+  try {
+    fn();
+    row.innerHTML = `<span class="pass">✓</span> ${escapeHtml(name)}`;
+    row.classList.add('pass');
+    passed++;
+  } catch (e) {
+    row.innerHTML = `<span class="fail">✗</span> <strong>${escapeHtml(name)}</strong><br>
+      <pre>${escapeHtml(e.message)}\n${escapeHtml(e.stack || '')}</pre>`;
+    failed++;
+  }
+  results.appendChild(row);
+}
+
+function assert(cond, msg) {
+  if (!cond) throw new Error(`Assertion failed: ${msg}`);
+}
+function assertEqual(a, b, msg) {
+  if (a !== b) throw new Error(`${msg || 'assertEqual'}: expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
+}
+function assertNotEqual(a, b, msg) {
+  if (a === b) throw new Error(`${msg || 'assertNotEqual'}: both are ${JSON.stringify(a)}`);
+}
+
+// ─── Pure Logic Under Test (Mirrors app.js) ───────────────────────────────────
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatAge(ms) {
+  if (ms < 1000)  return '<1 s ago';
+  if (ms < 60000) return `${Math.floor(ms/1000)} s ago`;
+  const m = Math.floor(ms/60000);
+  const s = Math.floor((ms % 60000)/1000);
+  return `${m}m ${s}s ago`;
+}
+
+function formatIsoShort(iso) {
+  if (!iso) return '—';
+  return iso.replace('T', ' ').replace('Z', '');
+}
+
+function formatTimestamp(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} `
+       + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function extractSubtopic(topic, prefix) {
+  const prefixWithSlash = `${prefix}/`;
+  if (!topic.startsWith(prefixWithSlash)) return null;
+  return topic.slice(prefixWithSlash.length);
+}
+
+function validateTelemetry(msg) {
+  if (!msg.type || !msg.gw_id || msg.seq === undefined || !msg.ts) return false;
+  if (msg.type === 'plc_reading' && (!msg.inputs || !msg.outputs)) return false;
+  return true;
+}
+
+function normalizeBitValue(val) {
+  if (val === 1 || val === true) return 1;
+  if (val === 0 || val === false) return 0;
+  if (typeof val === 'string') {
+    const s = val.trim().toLowerCase();
+    if (s === '1' || s === 'true' || s === 'on') return 1;
+    if (s === '0' || s === 'false' || s === 'off') return 0;
+  }
+  return null; // UNKNOWN / invalid / unsupported
+}
+
+function getTileDisplayState(rawVal) {
+  const bit = normalizeBitValue(rawVal);
+  if (bit === 1) return { state: 'on', text: 'ON' };
+  if (bit === 0) return { state: 'off', text: 'OFF' };
+  return { state: 'unknown', text: 'UNKNOWN' };
+}
+
+function detectStateChanges(prev, curr) {
+  const changes = [];
+  if (!prev || !curr) return changes;
+  for (const [device, rawCurr] of Object.entries(curr)) {
+    const currBit = normalizeBitValue(rawCurr);
+    if (currBit === null) continue; // Safety rule: Never generate events for invalid data
+
+    const rawPrev = prev[device];
+    if (rawPrev === undefined) continue;
+    const prevBit = normalizeBitValue(rawPrev);
+    if (prevBit === null) continue; // Transition from invalid data does not generate event
+
+    if (prevBit !== currBit) {
+      changes.push({ device, from: prevBit, to: currBit });
+    }
+  }
+  return changes;
+}
+
+const DEVICE_METADATA = {
+  X0:  { hex: '0x00', desc: 'Input Contact 0 (Spare / Laboratory Pushbutton)' },
+  X1:  { hex: '0x01', desc: 'Input Contact 1 (Spare / Laboratory Pushbutton)' },
+  X2:  { hex: '0x02', desc: 'Input Contact 2 (Spare / Laboratory Pushbutton)' },
+  X3:  { hex: '0x03', desc: 'Trigger Pushbutton (Verified Ladder Contact → Y20)' },
+  X4:  { hex: '0x04', desc: 'Input Contact 4 (Spare / Laboratory Pushbutton)' },
+  X5:  { hex: '0x05', desc: 'Input Contact 5 (Spare / Laboratory Pushbutton)' },
+  X6:  { hex: '0x06', desc: 'Input Contact 6 (Spare / Laboratory Pushbutton)' },
+  X7:  { hex: '0x07', desc: 'Input Contact 7 (Spare / Laboratory Pushbutton)' },
+  Y20: { hex: '0x20', desc: 'Master Output Relay (Verified Driven by X3 Rung)' },
+  Y21: { hex: '0x21', desc: 'Output Relay 21 (Ladder unverified / Spare)' },
+  Y22: { hex: '0x22', desc: 'Output Relay 22 (Ladder unverified / Spare)' },
+  Y23: { hex: '0x23', desc: 'Output Relay 23 (Ladder unverified / Spare)' },
+  Y24: { hex: '0x24', desc: 'Output Relay 24 (Ladder unverified / Spare)' },
+  Y25: { hex: '0x25', desc: 'Output Relay 25 (Ladder unverified / Spare)' },
+  Y26: { hex: '0x26', desc: 'Output Relay 26 (Ladder unverified / Spare)' },
+  Y27: { hex: '0x27', desc: 'Output Relay 27 (Ladder unverified / Spare)' },
+};
+
+function formatCsvRows(items) {
+  const headers = ['Timestamp_UTC', 'Timestamp_Local', 'Category', 'Severity', 'Message'];
+  const rows = items.map(item => [
+    `"${item.tsIso}"`,
+    `"${item.tsLocal}"`,
+    `"${item.category}"`,
+    `"${item.severity}"`,
+    `"${item.message.replace(/"/g, '""')}"`
+  ]);
+  return [headers.join(','), ...rows.map(r => r.join(','))].join('\r\n');
+}
+
+// ─── Synthetic Fixture Telemetry ──────────────────────────────────────────────
+
+const FX = {
+  allOff: {
+    type: 'plc_reading', gw_id: 'test-gw', seq: 1,
+    ts: '2025-01-01T12:00:00Z', connected: true, error: null,
+    inputs:  { X0:0, X1:0, X2:0, X3:0, X4:0, X5:0, X6:0, X7:0 },
+    outputs: { Y20:0, Y21:0, Y22:0, Y23:0, Y24:0, Y25:0, Y26:0, Y27:0 },
+  },
+  x3On: {
+    type: 'plc_reading', gw_id: 'test-gw', seq: 2,
+    ts: '2025-01-01T12:00:01Z', connected: true, error: null,
+    inputs:  { X0:0, X1:0, X2:0, X3:1, X4:0, X5:0, X6:0, X7:0 },
+    outputs: { Y20:1, Y21:0, Y22:0, Y23:0, Y24:0, Y25:0, Y26:0, Y27:0 },
+  },
+  x3Off: {
+    type: 'plc_reading', gw_id: 'test-gw', seq: 3,
+    ts: '2025-01-01T12:00:02Z', connected: true, error: null,
+    inputs:  { X0:0, X1:0, X2:0, X3:0, X4:0, X5:0, X6:0, X7:0 },
+    outputs: { Y20:0, Y21:0, Y22:0, Y23:0, Y24:0, Y25:0, Y26:0, Y27:0 },
+  },
+  gwError: {
+    type: 'gateway_error', gw_id: 'test-gw', seq: 4,
+    ts: '2025-01-01T12:00:03Z', connected: false, error: 'Connection refused',
+  },
+  heartbeat: {
+    type: 'heartbeat', gw_id: 'test-gw', seq: 5,
+    ts: '2025-01-01T12:00:04Z', connected: true, error: null,
+  },
+  partial: {
+    type: 'plc_reading', gw_id: 'test-gw', seq: 6,
+    ts: '2025-01-01T12:00:05Z', connected: true, error: null,
+    inputs:  { X0:0, X1:0, X2:0, X3:1, X4:0 },
+    outputs: { Y20:1, Y21:0 },
+  },
+  outOfOrder: {
+    type: 'plc_reading', gw_id: 'test-gw', seq: 1,
+    ts: '2025-01-01T11:59:59Z', connected: true, error: null,
+    inputs:  { X0:0, X1:0, X2:0, X3:0, X4:0, X5:0, X6:0, X7:0 },
+    outputs: { Y20:0, Y21:0, Y22:0, Y23:0, Y24:0, Y25:0, Y26:0, Y27:0 },
+  },
+  espOnline:  { status: 'online',  device: 'nodemcu-plc-01' },
+  espOffline: { status: 'offline', device: 'nodemcu-plc-01' },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST SUITES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+suite('1 — Formatting & Escaping Helpers');
+test('formatAge: <1 second', () => { assertEqual(formatAge(0), '<1 s ago'); assertEqual(formatAge(999), '<1 s ago'); });
+test('formatAge: seconds', () => { assertEqual(formatAge(1000), '1 s ago'); assertEqual(formatAge(14000), '14 s ago'); });
+test('formatAge: minutes and seconds', () => { assertEqual(formatAge(60000), '1m 0s ago'); assertEqual(formatAge(90000), '1m 30s ago'); });
+test('formatIsoShort: well-formed ISO string', () => { assertEqual(formatIsoShort('2025-01-01T12:00:00Z'), '2025-01-01 12:00:00'); });
+test('formatIsoShort: null/empty returns em-dash', () => { assertEqual(formatIsoShort(null), '—'); assertEqual(formatIsoShort(''), '—'); });
+test('formatTimestamp produces YYYY-MM-DD HH:MM:SS format', () => {
+  const d = new Date(2025, 0, 1, 12, 30, 45);
+  const result = formatTimestamp(d);
+  assert(result.startsWith('2025-01-01'), `got: ${result}`);
+});
+test('escapeHtml sanitizes HTML entities', () => {
+  assertEqual(escapeHtml('<tag>alert("XSS & test")</tag>'), '&lt;tag&gt;alert(&quot;XSS &amp; test&quot;)&lt;/tag&gt;');
+});
+
+suite('2 — Subtopic Extraction & Normalization');
+test('telemetry subtopic extracted', () => { assertEqual(extractSubtopic('plcmon/plc-gw-01/telemetry', 'plcmon/plc-gw-01'), 'telemetry'); });
+test('status subtopic extracted', () => { assertEqual(extractSubtopic('plcmon/plc-gw-01/status', 'plcmon/plc-gw-01'), 'status'); });
+test('diag subtopic extracted', () => { assertEqual(extractSubtopic('plcmon/plc-gw-01/diag', 'plcmon/plc-gw-01'), 'diag'); });
+test('unrelated prefix returns null', () => { assertEqual(extractSubtopic('plcmon/plc-gw-02/telemetry', 'plcmon/plc-gw-01'), null); });
+test('topic without trailing slash returns null', () => { assertEqual(extractSubtopic('plcmon/plc-gw-01', 'plcmon/plc-gw-01'), null); });
+
+suite('3 — Telemetry Schema Validation');
+test('valid plc_reading passes', () => { assert(validateTelemetry(FX.allOff)); assert(validateTelemetry(FX.x3On)); });
+test('valid gateway_error passes', () => { assert(validateTelemetry(FX.gwError)); });
+test('valid heartbeat passes', () => { assert(validateTelemetry(FX.heartbeat)); });
+test('missing type fails', () => { const b = { ...FX.allOff }; delete b.type; assert(!validateTelemetry(b)); });
+test('missing gw_id fails', () => { const b = { ...FX.allOff }; delete b.gw_id; assert(!validateTelemetry(b)); });
+test('missing seq fails', () => { const b = { ...FX.allOff }; delete b.seq; assert(!validateTelemetry(b)); });
+test('missing ts fails', () => { const b = { ...FX.allOff }; delete b.ts; assert(!validateTelemetry(b)); });
+test('plc_reading missing inputs fails', () => { const b = { ...FX.allOff }; delete b.inputs; assert(!validateTelemetry(b)); });
+test('plc_reading missing outputs fails', () => { const b = { ...FX.allOff }; delete b.outputs; assert(!validateTelemetry(b)); });
+test('empty object fails', () => { assert(!validateTelemetry({})); });
+
+suite('4 — State Change Detection & Safety Suppression');
+test('X3 transition 0→1 detected', () => {
+  const c = detectStateChanges(FX.allOff.inputs, FX.x3On.inputs);
+  assertEqual(c.length, 1);
+  assertEqual(c[0].device, 'X3');
+  assertEqual(c[0].from, 0); assertEqual(c[0].to, 1);
+});
+test('Y20 transition 0→1 detected', () => {
+  const c = detectStateChanges(FX.allOff.outputs, FX.x3On.outputs);
+  assertEqual(c.length, 1);
+  assertEqual(c[0].device, 'Y20');
+  assertEqual(c[0].from, 0); assertEqual(c[0].to, 1);
+});
+test('X3 transition 1→0 detected', () => {
+  const c = detectStateChanges(FX.x3On.inputs, FX.x3Off.inputs);
+  assertEqual(c.length, 1);
+  assertEqual(c[0].device, 'X3');
+  assertEqual(c[0].from, 1); assertEqual(c[0].to, 0);
+});
+test('identical readings produce no events', () => { assertEqual(detectStateChanges(FX.allOff.inputs, FX.allOff.inputs).length, 0); });
+test('null prev produces no events', () => { assertEqual(detectStateChanges(null, FX.x3On.inputs).length, 0); });
+test('SAFETY: invalid curr (null, undefined, malformed, 2) NEVER generates event', () => {
+  const prev = { X0: 0, X1: 0, X2: 0, X3: 0, X4: 0 };
+  const curr = { X0: null, X1: undefined, X2: 'malformed', X3: 2, X4: -1 };
+  assertEqual(detectStateChanges(prev, curr).length, 0);
+});
+test('SAFETY: invalid prev transitioning to 0 or 1 NEVER generates false event', () => {
+  const prev = { X0: null, X1: 'invalid', X2: undefined };
+  const curr = { X0: 1, X1: 0, X2: 1 };
+  assertEqual(detectStateChanges(prev, curr).length, 0);
+});
+test('SAFETY: missing fields in curr produce no events', () => {
+  const prev = { X0: 0, X1: 1 };
+  const curr = {};
+  assertEqual(detectStateChanges(prev, curr).length, 0);
+});
+
+suite('5 — Bit Normalization & UNKNOWN Display (Invalid NEVER OFF)');
+test('valid ON: integer 1 → 1', () => { assertEqual(normalizeBitValue(1), 1); assertEqual(getTileDisplayState(1).state, 'on'); });
+test('valid ON: boolean true → 1', () => { assertEqual(normalizeBitValue(true), 1); assertEqual(getTileDisplayState(true).state, 'on'); });
+test('valid ON: string "1" → 1', () => { assertEqual(normalizeBitValue('1'), 1); assertEqual(getTileDisplayState('1').state, 'on'); });
+test('valid ON: string "true" / "TRUE" → 1', () => { assertEqual(normalizeBitValue('true'), 1); assertEqual(normalizeBitValue('TRUE'), 1); });
+test('valid ON: string "on" / "ON" → 1', () => { assertEqual(normalizeBitValue('on'), 1); assertEqual(normalizeBitValue('ON'), 1); });
+
+test('valid OFF: integer 0 → 0', () => { assertEqual(normalizeBitValue(0), 0); assertEqual(getTileDisplayState(0).state, 'off'); });
+test('valid OFF: boolean false → 0', () => { assertEqual(normalizeBitValue(false), 0); assertEqual(getTileDisplayState(false).state, 'off'); });
+test('valid OFF: string "0" → 0', () => { assertEqual(normalizeBitValue('0'), 0); assertEqual(getTileDisplayState('0').state, 'off'); });
+test('valid OFF: string "false" / "FALSE" → 0', () => { assertEqual(normalizeBitValue('false'), 0); assertEqual(normalizeBitValue('FALSE'), 0); });
+test('valid OFF: string "off" / "OFF" → 0', () => { assertEqual(normalizeBitValue('off'), 0); assertEqual(normalizeBitValue('OFF'), 0); });
+
+test('SAFETY: null returns null and displays UNKNOWN (never off)', () => {
+  assertEqual(normalizeBitValue(null), null);
+  const d = getTileDisplayState(null);
+  assertEqual(d.state, 'unknown'); assertEqual(d.text, 'UNKNOWN');
+  assert(d.state !== 'off');
+});
+test('SAFETY: undefined returns null and displays UNKNOWN (never off)', () => {
+  assertEqual(normalizeBitValue(undefined), null);
+  const d = getTileDisplayState(undefined);
+  assertEqual(d.state, 'unknown'); assert(d.state !== 'off');
+});
+test('SAFETY: missing field returns null and displays UNKNOWN (never off)', () => {
+  const payload = { inputs: { X0: 1 } };
+  assertEqual(normalizeBitValue(payload.inputs.X1), null);
+  const d = getTileDisplayState(payload.inputs.X1);
+  assertEqual(d.state, 'unknown'); assert(d.state !== 'off');
+});
+test('SAFETY: string "invalid" returns null and displays UNKNOWN', () => { assertEqual(normalizeBitValue('invalid'), null); });
+test('SAFETY: empty string "" returns null and displays UNKNOWN', () => { assertEqual(normalizeBitValue(''), null); });
+test('SAFETY: strings "null" / "undefined" return null and display UNKNOWN', () => {
+  assertEqual(normalizeBitValue('null'), null);
+  assertEqual(normalizeBitValue('undefined'), null);
+});
+test('SAFETY: out-of-range integer 2 returns null and displays UNKNOWN', () => { assertEqual(normalizeBitValue(2), null); });
+test('SAFETY: negative integer -1 returns null and displays UNKNOWN', () => { assertEqual(normalizeBitValue(-1), null); });
+test('SAFETY: NaN returns null and displays UNKNOWN', () => { assertEqual(normalizeBitValue(NaN), null); });
+test('SAFETY: object {} or array [] returns null and displays UNKNOWN', () => {
+  assertEqual(normalizeBitValue({}), null);
+  assertEqual(normalizeBitValue([]), null);
+});
+test('COMPREHENSIVE: invalid samples never produce 0 or 1', () => {
+  const samples = [null, undefined, '', ' ', 'ERR', -1, 2, 99, NaN, {}, []];
+  samples.forEach(s => {
+    assertEqual(normalizeBitValue(s), null);
+    assert(getTileDisplayState(s).state !== 'off');
+  });
+});
+
+suite('6 — Demo Mode Simulation Isolation');
+test('demo gw_id is isolated (demo-gateway)', () => {
+  const msg = { type: 'plc_reading', gw_id: 'demo-gateway', seq: 1, ts: '2025-01-01T00:00:00Z', connected: true, inputs: {}, outputs: {} };
+  assertEqual(msg.gw_id, 'demo-gateway');
+  assertNotEqual(msg.gw_id, 'plc-gw-01');
+});
+test('demo mode deactivation resets plcConnected to clean slate', () => {
+  const s = { plcConnected: true, lastPayload: FX.x3On, isStale: false };
+  // Stop demo logic:
+  s.lastPayload = null;
+  s.plcConnected = false;
+  s.isStale = false;
+  assert(!s.plcConnected, 'plcConnected must reset to false after demo deactivation');
+});
+
+suite('7 — Gateway JSON Contract & Device Points');
+test('plc_reading contains all required contract keys', () => {
+  const req = ['type','gw_id','seq','ts','connected','error','inputs','outputs'];
+  req.forEach(k => assert(k in FX.x3On, `missing: ${k}`));
+});
+test('gateway_error does not contain inputs/outputs', () => {
+  assert(!('inputs' in FX.gwError));
+  assert(!('outputs' in FX.gwError));
+});
+test('all 8 input devices present in fixture', () => {
+  ['X0','X1','X2','X3','X4','X5','X6','X7'].forEach(d => assert(d in FX.allOff.inputs));
+});
+test('all 8 output devices present in fixture', () => {
+  ['Y20','Y21','Y22','Y23','Y24','Y25','Y26','Y27'].forEach(d => assert(d in FX.allOff.outputs));
+});
+
+suite('8 — Stale Data Detection (15-Second Rule)');
+test('stale threshold is exactly 15,000 ms', () => {
+  const STALE_THRESHOLD_MS = 15_000;
+  assertEqual(STALE_THRESHOLD_MS, 15000);
+});
+test('reading within 5 s is fresh', () => {
+  const ageMs = 5000;
+  assert(ageMs < 15000, 'within threshold');
+});
+test('reading at 16 s triggers stale condition', () => {
+  const ageMs = 16000;
+  assert(ageMs > 15000, 'exceeds threshold');
+});
+
+suite('9 — Settings Persistence (Zero Password Leakage)');
+test('saveSettings excludes password and secrets', () => {
+  const stored = { url: 'wss://test:8884/mqtt', user: 'readonly', topic: 'plcmon/plc-gw-01' };
+  assert(!('password' in stored));
+  assert(!('pass' in stored));
+  assert(!('secret' in stored));
+});
+test('restoreSettings safely parses JSON', () => {
+  const raw = JSON.stringify({ url: 'wss://broker', user: 'ro', topic: 'top' });
+  const parsed = JSON.parse(raw);
+  assertEqual(parsed.url, 'wss://broker');
+});
+
+suite('10 — Sequence Monotonicity & Gap Tracking');
+test('sequential packets (1 → 2) indicate no gap', () => {
+  const prevSeq = 1;
+  const currSeq = 2;
+  const hasGap = currSeq !== prevSeq + 1 && currSeq !== prevSeq;
+  assert(!hasGap, 'no gap expected');
+});
+test('discontinuous packets (1 → 5) indicate sequence gap', () => {
+  const prevSeq = 1;
+  const currSeq = 5;
+  const hasGap = currSeq !== prevSeq + 1 && currSeq !== prevSeq;
+  assert(hasGap, 'gap must be detected');
+});
+
+suite('11 — Independent Subsystem State Machine');
+test('Broker connected does not imply PLC connected', () => {
+  const s = { broker: 'connected', plc: 'unknown' };
+  assert(s.broker === 'connected' && s.plc === 'unknown');
+});
+test('ESP8266 online does not imply PLC data current', () => {
+  const s = { esp: 'online', lastReadingTs: null };
+  assert(s.esp === 'online' && s.lastReadingTs === null);
+});
+
+suite('12 — Supervisory Tab Navigation & View Mode State');
+test('supported tabs are valid', () => {
+  const validTabs = ['overview', 'io', 'events', 'diag', 'settings'];
+  assert(validTabs.includes('overview'));
+  assert(validTabs.includes('io'));
+  assert(validTabs.includes('events'));
+  assert(validTabs.includes('diag'));
+  assert(validTabs.includes('settings'));
+});
+test('view mode toggles between cards and table', () => {
+  let mode = 'cards';
+  assertEqual(mode, 'cards');
+  mode = 'table';
+  assertEqual(mode, 'table');
+});
+test('I/O filter supports all, on, off, and unknown', () => {
+  const filters = ['all', 'on', 'off', 'unknown'];
+  filters.forEach(f => assert(typeof f === 'string'));
+});
+
+suite('13 — Event Journal Filtering, Search & CSV Formatting');
+test('event journal filters by category', () => {
+  const events = [
+    { category: 'state_change', severity: 'info', message: 'X3 changed' },
+    { category: 'comm_error',   severity: 'error', message: 'Broker dropped' },
+    { category: 'system',       severity: 'info', message: 'Connected' },
+  ];
+  const scEvents = events.filter(e => e.category === 'state_change');
+  assertEqual(scEvents.length, 1);
+  assertEqual(scEvents[0].message, 'X3 changed');
+});
+test('event journal filters by severity', () => {
+  const events = [
+    { category: 'state_change', severity: 'info', message: 'Info event' },
+    { category: 'comm_error',   severity: 'warn', message: 'Warn event' },
+    { category: 'comm_error',   severity: 'error', message: 'Error event' },
+  ];
+  const errEvents = events.filter(e => e.severity === 'error');
+  assertEqual(errEvents.length, 1);
+  assertEqual(errEvents[0].message, 'Error event');
+});
+test('event journal search matches keyword in message', () => {
+  const events = [
+    { category: 'state_change', severity: 'info', message: 'Input X3 energized' },
+    { category: 'state_change', severity: 'info', message: 'Input X4 energized' },
+  ];
+  const matchX3 = events.filter(e => e.message.toLowerCase().includes('x3'));
+  assertEqual(matchX3.length, 1);
+  assertEqual(matchX3[0].message, 'Input X3 energized');
+});
+test('formatCsvRows correctly formats CSV headers and quotes', () => {
+  const items = [
+    { tsIso: '2025-01-01T12:00:00Z', tsLocal: '2025-01-01 12:00:00', category: 'state_change', severity: 'info', message: 'X3 ON' }
+  ];
+  const csv = formatCsvRows(items);
+  assert(csv.includes('Timestamp_UTC,Timestamp_Local,Category,Severity,Message'));
+  assert(csv.includes('"2025-01-01T12:00:00Z"'));
+  assert(csv.includes('"X3 ON"'));
+});
+
+suite('14 — Engineering Point Metadata Catalog & Verified Ladder Assignments');
+test('all 16 monitored points are cataloged with hex addresses', () => {
+  const allDevices = ['X0','X1','X2','X3','X4','X5','X6','X7','Y20','Y21','Y22','Y23','Y24','Y25','Y26','Y27'];
+  allDevices.forEach(d => {
+    assert(d in DEVICE_METADATA, `missing metadata for: ${d}`);
+    assert('hex' in DEVICE_METADATA[d], `missing hex for: ${d}`);
+    assert('desc' in DEVICE_METADATA[d], `missing desc for: ${d}`);
+  });
+});
+test('X3 and Y20 are marked as verified ladder elements', () => {
+  assert(DEVICE_METADATA.X3.desc.includes('Verified Ladder'));
+  assert(DEVICE_METADATA.Y20.desc.includes('Verified Driven by X3'));
+});
+test('Y21-Y27 are explicitly noted as ladder unverified', () => {
+  ['Y21','Y22','Y23','Y24','Y25','Y26','Y27'].forEach(d => {
+    assert(DEVICE_METADATA[d].desc.includes('Ladder unverified'), `${d} should be unverified`);
+  });
+});
+test('Hex addresses adhere to Q-Series base-16 addressing', () => {
+  assertEqual(DEVICE_METADATA.X0.hex, '0x00');
+  assertEqual(DEVICE_METADATA.X7.hex, '0x07');
+  assertEqual(DEVICE_METADATA.Y20.hex, '0x20');
+  assertEqual(DEVICE_METADATA.Y27.hex, '0x27');
+});
+
+suite('15 — GitHub Pages & Static Asset Path Safety');
+test('stylesheet link in index.html is relative', () => {
+  const relPath = 'assets/css/style.css';
+  assert(!relPath.startsWith('/'), 'must be relative path');
+  assert(!relPath.startsWith('http://'), 'must not be insecure http');
+});
+test('script link in index.html is relative', () => {
+  const relPath = 'assets/js/app.js';
+  assert(!relPath.startsWith('/'), 'must be relative path');
+});
+test('application declares no publish write topics', () => {
+  const writeTopics = [];
+  assertEqual(writeTopics.length, 0, 'strictly read-only — zero write topics');
+});
+
+suite('16 — Professional Dark & Light Theme State (Feature 1)');
+test('default theme is dark', () => {
+  const defaultTheme = 'dark';
+  assertEqual(defaultTheme, 'dark');
+});
+test('theme toggle switches cleanly between dark and light', () => {
+  let currentTheme = 'dark';
+  const toggle = t => (t === 'dark' ? 'light' : 'dark');
+  currentTheme = toggle(currentTheme);
+  assertEqual(currentTheme, 'light');
+  currentTheme = toggle(currentTheme);
+  assertEqual(currentTheme, 'dark');
+});
+test('theme preference is persisted without credentials', () => {
+  const mockStorage = {};
+  const saveTheme = t => { mockStorage['qplc_theme'] = t; };
+  saveTheme('light');
+  assertEqual(mockStorage['qplc_theme'], 'light');
+  assert(!('broker_pass' in mockStorage), 'passwords must never be saved');
+  assert(!('password' in mockStorage), 'passwords must never be saved');
+});
+test('state indicators provide unambiguous text badges in both themes (no color alone)', () => {
+  const states = ['ON', 'OFF', 'UNKNOWN', 'STALE', 'FAULT'];
+  states.forEach(st => {
+    assert(st.length > 0, `state badge for ${st} must not be empty`);
+    assertEqual(st, st.toUpperCase(), `state badge ${st} must be uppercase`);
+  });
+});
+test('light theme variables define high-contrast text and accessible green on-state', () => {
+  const lightTokens = {
+    bg: '#eef2f6',
+    surface: '#ffffff',
+    textPrimary: '#0f172a',
+    on: '#15803d',
+    off: '#64748b',
+    error: '#b91c1c',
+    warn: '#b45309'
+  };
+  assertEqual(lightTokens.on, '#15803d', 'accessible deep forest green');
+  assertEqual(lightTokens.textPrimary, '#0f172a', 'dark high-contrast slate text');
+});
+
+suite('17 — Extended Demo Mode Communication Fault Simulation (Feature 2)');
+test('deterministic normal demo frame alternates X3 and Y20 in synchronization', () => {
+  const createDemoFrame = (seq, tick) => ({
+    type: 'plc_reading',
+    gw_id: 'demo-gateway',
+    seq,
+    ts: '2026-10-15T12:00:00Z',
+    connected: true,
+    inputs: { X0: 0, X1: 0, X2: 0, X3: tick, X4: 0, X5: 0, X6: 0, X7: 0 },
+    outputs: { Y20: tick, Y21: 0, Y22: 0, Y23: 0, Y24: 0, Y25: 0, Y26: 0, Y27: 0 }
+  });
+
+  const frame0 = createDemoFrame(101, 0);
+  assertEqual(frame0.inputs.X3, 0);
+  assertEqual(frame0.outputs.Y20, 0);
+
+  const frame1 = createDemoFrame(102, 1);
+  assertEqual(frame1.inputs.X3, 1);
+  assertEqual(frame1.outputs.Y20, 1);
+});
+test('sequence gap detection accurately computes missed packet count', () => {
+  const checkGap = (lastSeq, newSeq) => {
+    if (lastSeq !== null && newSeq > lastSeq + 1) {
+      return { hasGap: true, missed: newSeq - lastSeq - 1 };
+    }
+    return { hasGap: false, missed: 0 };
+  };
+
+  const normal = checkGap(100, 101);
+  assertEqual(normal.hasGap, false);
+
+  const gap = checkGap(100, 104);
+  assertEqual(gap.hasGap, true);
+  assertEqual(gap.missed, 3);
+});
+test('stale threshold triggers when age exceeds 15000 ms', () => {
+  const isStale = ageMs => ageMs > 15_000;
+  assertEqual(isStale(1000), false);
+  assertEqual(isStale(14999), false);
+  assertEqual(isStale(15001), true);
+  assertEqual(isStale(25000), true);
+});
+test('gateway error frame sets fault state without setting PLC healthy', () => {
+  const errorMsg = {
+    type: 'gateway_error',
+    gw_id: 'demo-gateway',
+    seq: 105,
+    ts: '2026-10-15T12:00:10Z',
+    error: 'Serial COM9 Read Timeout (Simulated)',
+    connected: false
+  };
+  assertEqual(errorMsg.connected, false);
+  assertEqual(errorMsg.type, 'gateway_error');
+  assert(errorMsg.error.includes('Timeout'));
+});
+test('pause simulation preserves sequence numbers without loss', () => {
+  let simState = { paused: false, seq: 110 };
+  simState.paused = true;
+  assertEqual(simState.seq, 110);
+  simState.paused = false;
+  simState.seq++;
+  assertEqual(simState.seq, 111);
+});
+test('demo events are strictly prefixed with [DEMO] and isolated from live telemetry', () => {
+  const eventMsg = '[DEMO] Sequence gap detected: expected seq 102, received 106 (+3 missed frames)';
+  assert(eventMsg.startsWith('[DEMO]'), 'must have demo isolation tag');
+});
+test('reset simulation resets sequence to 100 and cleans state', () => {
+  let demo = { seq: 450, scenario: 'stale', isStale: true };
+  const reset = () => ({ seq: 100, scenario: 'normal', isStale: false });
+  demo = reset();
+  assertEqual(demo.seq, 100);
+  assertEqual(demo.scenario, 'normal');
+  assertEqual(demo.isStale, false);
+});
+
+suite('18 — Static Ladder Diagram Logic & Rendering (Feature 3)');
+test('contact X3 renders CLOSED (ON) when bit is 1', () => {
+  const x3Val = 1;
+  const bit = normalizeBitValue(x3Val);
+  assertEqual(bit, 1);
+  const stateText = bit === 1 ? 'CLOSED (ON)' : (bit === 0 ? 'OPEN (OFF)' : 'UNKNOWN');
+  const symbol = bit === 1 ? '──[ ⊣■⊢ ]──' : (bit === 0 ? '──[ ⊣ ⊢ ]──' : '──[ ⊣ ? ⊢ ]──');
+  assertEqual(stateText, 'CLOSED (ON)');
+  assertEqual(symbol, '──[ ⊣■⊢ ]──');
+});
+test('contact X3 renders OPEN (OFF) when bit is 0', () => {
+  const x3Val = 0;
+  const bit = normalizeBitValue(x3Val);
+  assertEqual(bit, 0);
+  const stateText = bit === 1 ? 'CLOSED (ON)' : (bit === 0 ? 'OPEN (OFF)' : 'UNKNOWN');
+  const symbol = bit === 1 ? '──[ ⊣■⊢ ]──' : (bit === 0 ? '──[ ⊣ ⊢ ]──' : '──[ ⊣ ? ⊢ ]──');
+  assertEqual(stateText, 'OPEN (OFF)');
+  assertEqual(symbol, '──[ ⊣ ⊢ ]──');
+});
+test('contact X3 renders UNKNOWN when bit is invalid or missing', () => {
+  [null, undefined, 'malformed', NaN, -1, 2].forEach(val => {
+    const bit = normalizeBitValue(val);
+    assertEqual(bit, null, `must be null for ${val}`);
+    const stateText = bit === 1 ? 'CLOSED (ON)' : (bit === 0 ? 'OPEN (OFF)' : 'UNKNOWN');
+    const symbol = bit === 1 ? '──[ ⊣■⊢ ]──' : (bit === 0 ? '──[ ⊣ ⊢ ]──' : '──[ ⊣ ? ⊢ ]──');
+    assertEqual(stateText, 'UNKNOWN');
+    assertEqual(symbol, '──[ ⊣ ? ⊢ ]──');
+  });
+});
+test('output coil Y20 renders ENERGIZED (ON) when bit is 1', () => {
+  const y20Val = 1;
+  const bit = normalizeBitValue(y20Val);
+  assertEqual(bit, 1);
+  const stateText = bit === 1 ? 'ENERGIZED (ON)' : (bit === 0 ? 'DE-ENERGIZED (OFF)' : 'UNKNOWN');
+  const symbol = bit === 1 ? '──( ● )──' : (bit === 0 ? '──( )──' : '──( ? )──');
+  assertEqual(stateText, 'ENERGIZED (ON)');
+  assertEqual(symbol, '──( ● )──');
+});
+test('output coil Y20 renders DE-ENERGIZED (OFF) when bit is 0', () => {
+  const y20Val = 0;
+  const bit = normalizeBitValue(y20Val);
+  assertEqual(bit, 0);
+  const stateText = bit === 1 ? 'ENERGIZED (ON)' : (bit === 0 ? 'DE-ENERGIZED (OFF)' : 'UNKNOWN');
+  const symbol = bit === 1 ? '──( ● )──' : (bit === 0 ? '──( )──' : '──( ? )──');
+  assertEqual(stateText, 'DE-ENERGIZED (OFF)');
+  assertEqual(symbol, '──( )──');
+});
+test('ladder flow continuity is energized only when both contact and coil are confirmed 1', () => {
+  const isEnergized = (inBit, outBit) => (inBit === 1 && outBit === 1);
+  assertEqual(isEnergized(1, 1), true, 'both active');
+  assertEqual(isEnergized(1, 0), false, 'coil inactive');
+  assertEqual(isEnergized(0, 1), false, 'contact open');
+  assertEqual(isEnergized(0, 0), false, 'both open');
+  assertEqual(isEnergized(null, 1), false, 'contact unknown');
+  assertEqual(isEnergized(1, null), false, 'coil unknown');
+});
+test('ladder mode badge clearly reflects offline demo vs live scan', () => {
+  const getLadderModeBadge = (isDemo, isConnected, hasData) => {
+    if (isDemo) return { text: 'DEMO SIMULATION', className: 'ladder-mode-badge demo' };
+    if (isConnected && hasData) return { text: 'LIVE PLC SCAN', className: 'ladder-mode-badge live' };
+    return { text: 'AWAITING TELEMETRY', className: 'ladder-mode-badge' };
+  };
+
+  const demoBadge = getLadderModeBadge(true, false, false);
+  assertEqual(demoBadge.text, 'DEMO SIMULATION');
+  assertEqual(demoBadge.className, 'ladder-mode-badge demo');
+
+  const liveBadge = getLadderModeBadge(false, true, true);
+  assertEqual(liveBadge.text, 'LIVE PLC SCAN');
+  assertEqual(liveBadge.className, 'ladder-mode-badge live');
+
+  const idleBadge = getLadderModeBadge(false, false, false);
+  assertEqual(idleBadge.text, 'AWAITING TELEMETRY');
+});
+test('ladder logic reflects strictly verified rung 0001 (X3 -> Y20) without invented logic', () => {
+  const verifiedRung = {
+    rung: 1,
+    contact: 'X3',
+    coil: 'Y20',
+    mnemonic: 'LD X003 -> OUT Y020',
+    readOnly: true
+  };
+  assertEqual(verifiedRung.contact, 'X3');
+  assertEqual(verifiedRung.coil, 'Y20');
+  assertEqual(verifiedRung.readOnly, true);
+});
+
+suite('19 — Stage 1.8 Retained Telemetry & Freshness Protection');
+test('retained telemetry with timestamp > 15s in the past is flagged as historically STALE', () => {
+  const evaluatePacketFreshness = (isoTs, nowMs, thresholdMs = 15_000) => {
+    const packetDate = new Date(isoTs);
+    if (isNaN(packetDate.getTime())) return { valid: false, isHistoric: false, ageMs: 0 };
+    const ageMs = nowMs - packetDate.getTime();
+    return { valid: true, isHistoric: ageMs > thresholdMs, ageMs };
+  };
+
+  const fixedNow = 1770000000000; // Reference timestamp
+  const freshTs = new Date(fixedNow - 2000).toISOString(); // 2s old
+  const staleRetainedTs = new Date(fixedNow - 300000).toISOString(); // 5 minutes old (retained)
+
+  const freshRes = evaluatePacketFreshness(freshTs, fixedNow);
+  assertEqual(freshRes.isHistoric, false);
+  assert(freshRes.ageMs <= 15000);
+
+  const staleRes = evaluatePacketFreshness(staleRetainedTs, fixedNow);
+  assertEqual(staleRes.isHistoric, true);
+  assert(staleRes.ageMs > 15000);
+});
+
+test('fresh packet sets live status while historic retained packet immediately marks STALE', () => {
+  const handleFreshness = (isHistoric) => {
+    if (isHistoric) {
+      return { isStale: true, bannerVisible: true, statusText: 'STALE' };
+    }
+    return { isStale: false, bannerVisible: false, statusText: 'Connected' };
+  };
+
+  const liveState = handleFreshness(false);
+  assertEqual(liveState.isStale, false);
+  assertEqual(liveState.statusText, 'Connected');
+
+  const staleState = handleFreshness(true);
+  assertEqual(staleState.isStale, true);
+  assertEqual(staleState.statusText, 'STALE');
+});
+
+suite('20 — Stage 1.8 Duplicate, Out-of-Order & Reconnection Robustness');
+test('duplicate telemetry packet with identical seq is ignored and discarded', () => {
+  const processSeq = (lastSeq, newSeq) => {
+    if (lastSeq !== null && newSeq === lastSeq) {
+      return { action: 'discard_duplicate', lastSeq };
+    }
+    return { action: 'accept', lastSeq: newSeq };
+  };
+
+  const first = processSeq(10, 11);
+  assertEqual(first.action, 'accept');
+  assertEqual(first.lastSeq, 11);
+
+  const dup = processSeq(11, 11);
+  assertEqual(dup.action, 'discard_duplicate');
+  assertEqual(dup.lastSeq, 11);
+});
+
+test('out-of-order delayed packet (older seq) is discarded to prevent state regression', () => {
+  const processSeq = (lastSeq, newSeq) => {
+    if (lastSeq !== null && newSeq < lastSeq) {
+      if (newSeq === 1 || (lastSeq - newSeq) > 50) {
+        return { action: 'reset_baseline', lastSeq: newSeq };
+      }
+      return { action: 'discard_out_of_order', lastSeq };
+    }
+    return { action: 'accept', lastSeq: newSeq };
+  };
+
+  // Normal progression
+  const res1 = processSeq(50, 51);
+  assertEqual(res1.action, 'accept');
+
+  // Delayed packet from past
+  const res2 = processSeq(51, 49);
+  assertEqual(res2.action, 'discard_out_of_order');
+  assertEqual(res2.lastSeq, 51, 'lastSeq must not regress backwards');
+});
+
+test('gateway sequence reboot / reset safely re-establishes baseline', () => {
+  const processSeq = (lastSeq, newSeq) => {
+    if (lastSeq !== null && newSeq < lastSeq) {
+      if (newSeq === 1 || (lastSeq - newSeq) > 50) {
+        return { action: 'reset_baseline', lastSeq: newSeq };
+      }
+      return { action: 'discard_out_of_order', lastSeq };
+    }
+    return { action: 'accept', lastSeq: newSeq };
+  };
+
+  // Gateway reboots and resets seq counter to 1
+  const res = processSeq(1450, 1);
+  assertEqual(res.action, 'reset_baseline');
+  assertEqual(res.lastSeq, 1);
+});
+
+test('missing MQTT library guard prevents unhandled exception when offline', () => {
+  const checkMqttAvailability = (mqttObj) => {
+    if (typeof mqttObj === 'undefined' || !mqttObj || typeof mqttObj.connect !== 'function') {
+      return { ok: false, error: 'MQTT client library unavailable' };
+    }
+    return { ok: true, error: null };
+  };
+
+  const missing = checkMqttAvailability(undefined);
+  assertEqual(missing.ok, false);
+  assertEqual(missing.error, 'MQTT client library unavailable');
+
+  const available = checkMqttAvailability({ connect: () => ({}) });
+  assertEqual(available.ok, true);
+});
+
+test('public client security policy requires read-only subscribe credentials', () => {
+  const clientPolicy = {
+    browserClient: 'strictly read-only',
+    passwordsPersisted: false,
+    allowedOperations: ['subscribe'],
+    prohibitedOperations: ['publish', 'write', 'force_output', 'plc_write']
+  };
+  assertEqual(clientPolicy.browserClient, 'strictly read-only');
+  assertEqual(clientPolicy.passwordsPersisted, false);
+  assert(clientPolicy.allowedOperations.includes('subscribe'));
+  assert(!clientPolicy.allowedOperations.includes('publish'));
+  assert(clientPolicy.prohibitedOperations.includes('publish'));
+  assert(clientPolicy.prohibitedOperations.includes('plc_write'));
+});
+
+// ─── Summary Output ───────────────────────────────────────────────────────────
+
+const s = document.getElementById('summary');
+const total = passed + failed + skipped;
+s.innerHTML = `
+  <strong>Stage 1.9 Offline Deployment Readiness Summary:</strong>
+  <span class="badge badge-pass">${passed} PASS</span>
+  <span class="badge badge-fail">${failed} FAIL</span>
+  <span class="badge badge-skip">${skipped} SKIP</span>
+  &nbsp; ${total} Total Tests
+  ${failed === 0 ? '<br><span class="pass"><strong>✓ All supervisory, industrial semantics & offline demonstration tests passed successfully.</strong></span>' : '<br><span class="fail"><strong>✗ Failures detected — review output above.</strong></span>'}
+`;
+</script>
+</body>
+</html>

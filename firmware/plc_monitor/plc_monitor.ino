@@ -240,13 +240,16 @@ void setup() {
   delay(100);
   Serial.println("\n[SYS] PLC Monitor firmware starting…");
 
-  // TLS: for HiveMQ Cloud (and similar managed brokers with public CA certs),
-  // setInsecure() bypasses certificate verification.  For production, load
-  // the broker's CA certificate with setCACert().
-  // TODO: Replace setInsecure() with setCACert(broker_ca_cert) before deployment.
+  // TLS: For EMQX Cloud Serverless (port 8883), setInsecure() enables TLS 1.2
+  // encryption without requiring root CA certificates in ESP8266 RAM.
+  // Note: setInsecure() encrypts traffic in transit but does NOT verify
+  // the broker certificate against a local trust anchor.
   wifiClient.setInsecure();
 
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
+  // PubSubClient default buffer is 256 bytes. Telemetry JSON (~255B) plus topic (26B)
+  // exceeds 256B. Allocate 1024B buffer to prevent packet drops.
+  mqttClient.setBufferSize(1024);
   mqttClient.setKeepAlive(MQTT_KEEPALIVE_S);
   // This firmware does NOT subscribe to any command topics (read-only role).
 

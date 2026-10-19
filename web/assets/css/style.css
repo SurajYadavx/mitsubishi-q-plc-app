@@ -381,7 +381,53 @@ body {
   max-width: var(--max-width);
   margin: 0 auto;
   padding: 0 var(--space-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
 }
+
+.nav-device-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--clr-surface-1);
+  border: 1px solid var(--clr-border);
+  border-radius: var(--radius-xs);
+  flex-shrink: 0;
+  margin: 4px 0;
+}
+
+.device-select-label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--clr-accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.select-device-industrial {
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  background: var(--clr-surface-2);
+  border: 1px solid var(--clr-border);
+  border-radius: var(--radius-xs);
+  color: var(--clr-text-primary);
+  cursor: pointer;
+  outline: none;
+  max-width: 320px;
+}
+
+.select-device-industrial:focus {
+  border-color: var(--clr-accent);
+}
+
 
 .nav-tabs {
   display: flex;
@@ -2275,3 +2321,209 @@ body {
   }
   .nav-tab svg { width: 12px; height: 12px; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ANALOG & REGISTER TELEMETRY METRICS SECTION (Phase 06A)
+   ══════════════════════════════════════════════════════════════════════════════ */
+.analog-card {
+  margin-top: var(--space-lg);
+}
+
+.analog-overview-card {
+  margin-bottom: var(--space-lg);
+}
+
+.io-title--analog {
+  color: #38bdf8;
+}
+
+.analog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-md);
+  padding: var(--space-md);
+}
+
+.analog-overview-grid {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  padding: var(--space-sm) var(--space-md);
+}
+
+.analog-empty-state {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: var(--space-xl) var(--space-md);
+  color: var(--clr-text-muted);
+  font-size: 0.82rem;
+  background: var(--clr-surface-2);
+  border: 1px dashed var(--clr-border);
+  border-radius: var(--radius-sm);
+}
+
+.analog-metric-card {
+  background: var(--clr-surface-2);
+  border: 1px solid var(--clr-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  border-left: 4px solid var(--clr-border);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+  box-shadow: var(--shadow-sm);
+}
+
+.analog-metric-card.quality-good {
+  border-left-color: #3fb950;
+}
+
+.analog-metric-card.quality-bad,
+.analog-metric-card.quality-comm-failure {
+  border-left-color: #f85149;
+}
+
+.analog-metric-card.quality-uncertain,
+.analog-metric-card.quality-stale {
+  border-left-color: #d29922;
+}
+
+.metric-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.metric-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.metric-point-id {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--clr-text-primary);
+  letter-spacing: 0.04em;
+}
+
+.metric-desc {
+  font-size: 0.7rem;
+  color: var(--clr-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+.metric-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.quality-badge {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.quality-badge.quality-good {
+  background: rgba(63, 185, 80, 0.15);
+  color: #3fb950;
+  border: 1px solid rgba(63, 185, 80, 0.35);
+}
+
+.quality-badge.quality-comm-failure,
+.quality-badge.quality-bad {
+  background: rgba(248, 81, 73, 0.15);
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.35);
+}
+
+.quality-badge.quality-uncertain,
+.quality-badge.quality-stale {
+  background: rgba(210, 153, 34, 0.15);
+  color: #d29922;
+  border: 1px solid rgba(210, 153, 34, 0.35);
+}
+
+.metric-sim-badge {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: var(--radius-xs);
+  background: rgba(227, 98, 9, 0.18);
+  color: #f0883e;
+  border: 1px solid rgba(227, 98, 9, 0.4);
+}
+
+.metric-body {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: var(--space-xs) 0;
+}
+
+.metric-value {
+  font-family: var(--font-mono);
+  font-size: 1.95rem;
+  font-weight: 700;
+  color: var(--clr-text-primary);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.metric-value.val-good {
+  color: var(--clr-text-primary);
+}
+
+.metric-value.val-fault,
+.metric-value.val-bad {
+  color: #f85149;
+}
+
+.metric-value.val-stale {
+  color: #d29922;
+}
+
+.metric-unit {
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--clr-text-secondary);
+}
+
+.metric-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--clr-text-muted);
+  border-top: 1px solid var(--clr-border-subtle);
+  padding-top: var(--space-xs);
+  margin-top: auto;
+}
+
+.metric-meta-type {
+  font-weight: 700;
+  color: #60a5fa;
+}
+
+.metric-meta-raw {
+  color: var(--clr-text-secondary);
+}
+
+.metric-meta-ts {
+  color: var(--clr-text-muted);
+}
+

@@ -15,9 +15,9 @@ NodeMCU ESP8266 (Arduino firmware)
         │
         │  Wi-Fi → MQTT/TLS (port 8883)
         ▼
-Managed MQTT Broker  (HiveMQ Cloud or equivalent)
+Managed MQTT Broker  (EMQX Cloud Serverless or equivalent)
         │
-        │  MQTT WebSockets / WSS (port 8884)
+        │  MQTT WebSockets / WSS (port 8084, path /mqtt)
         ▼
 GitHub Pages Static Frontend  (MQTT.js over WSS)
         │

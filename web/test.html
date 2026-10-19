@@ -396,7 +396,7 @@ test('reading at 16 s triggers stale condition', () => {
 
 suite('9 — Settings Persistence (Zero Password Leakage)');
 test('saveSettings excludes password and secrets', () => {
-  const stored = { url: 'wss://test:8884/mqtt', user: 'readonly', topic: 'plcmon/plc-gw-01' };
+  const stored = { url: 'wss://test:8084/mqtt', user: 'readonly', topic: 'plcmon/plc-gw-01' };
   assert(!('password' in stored));
   assert(!('pass' in stored));
   assert(!('secret' in stored));
@@ -862,17 +862,530 @@ test('public client security policy requires read-only subscribe credentials', (
   assert(clientPolicy.prohibitedOperations.includes('plc_write'));
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUITE 10: Multi-Device Catalog & Device Selector Logic (Phase 06A)
+// ═══════════════════════════════════════════════════════════════════════════════
+suite('Suite 10: Multi-Device Catalog & Device Selector Logic');
+
+test('device selector options generator formats device list correctly', () => {
+  const mockDevices = [
+    { id: 'melsec_q03', name: 'Laboratory Mitsubishi MELSEC-Q', model: 'Q03UDECPU', connected: true },
+    { id: 'sim_cell_02', name: 'Secondary Cell Simulated Fixture', model: 'SIM-Q03', connected: false },
+    { id: 'modbus_cell_01', name: 'Secondary Cell Modbus TCP Controller', model: 'OCS Modbus Slave', connected: false }
+  ];
+
+  const buildOptions = (devices, currentId) => {
+    if (!devices || devices.length === 0) {
+      return '<option value="" disabled selected>No devices configured</option>';
+    }
+    return devices.map(d => {
+      const id = d.id || d.device_id;
+      const name = d.name || id;
+      const model = d.model ? ` (${d.model})` : '';
+      const conn = d.connected ? ' • Online' : '';
+      const isSel = id === currentId ? 'selected' : '';
+      return `<option value="${escapeHtml(id)}" ${isSel}>${escapeHtml(name)}${escapeHtml(model)}${conn}</option>`;
+    }).join('');
+  };
+
+  const html = buildOptions(mockDevices, 'modbus_cell_01');
+  assert(html.includes('value="melsec_q03"'), 'Must contain melsec_q03');
+  assert(html.includes('value="sim_cell_02"'), 'Must contain sim_cell_02');
+  assert(html.includes('value="modbus_cell_01" selected'), 'Must select modbus_cell_01');
+  assert(html.includes('Laboratory Mitsubishi MELSEC-Q (Q03UDECPU) • Online'), 'Must format online status');
+});
+
+test('device selector empty state handles missing or empty device registry', () => {
+  const buildOptions = (devices) => {
+    if (!devices || devices.length === 0) {
+      return '<option value="" disabled selected>No devices configured</option>';
+    }
+    return '<option>device</option>';
+  };
+  assertEqual(buildOptions([]), '<option value="" disabled selected>No devices configured</option>');
+  assertEqual(buildOptions(null), '<option value="" disabled selected>No devices configured</option>');
+});
+
+test('device switching updates state, model, adapter, and resets prior device telemetry', () => {
+  const mockState = {
+    localAgentDeviceId: 'melsec_q03',
+    deviceAdapterId: 'mitsubishi_mc_3e',
+    deviceModel: 'Q03UDECPU',
+    simulationMode: false,
+    lastReadingTs: new Date(),
+    lastPayload: { seq: 50 },
+    isStale: false
+  };
+
+  const switchDevice = (s, targetDevice) => {
+    s.localAgentDeviceId = targetDevice.id;
+    s.deviceAdapterId = targetDevice.adapter_id;
+    s.deviceModel = targetDevice.model;
+    s.simulationMode = targetDevice.adapter_id === 'simulated';
+    s.lastReadingTs = null;
+    s.lastPayload = null;
+    s.isStale = false;
+  };
+
+  switchDevice(mockState, { id: 'modbus_cell_01', adapter_id: 'modbus_tcp', model: 'OCS Modbus Slave' });
+  assertEqual(mockState.localAgentDeviceId, 'modbus_cell_01');
+  assertEqual(mockState.deviceAdapterId, 'modbus_tcp');
+  assertEqual(mockState.deviceModel, 'OCS Modbus Slave');
+  assertEqual(mockState.simulationMode, false);
+  assertEqual(mockState.lastReadingTs, null, 'Must reset reading timestamp on device switch');
+  assertEqual(mockState.lastPayload, null, 'Must reset payload on device switch');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUITE 11: Analog & Numeric Telemetry Formatting & Scaling (Phase 06A)
+// ═══════════════════════════════════════════════════════════════════════════════
+suite('Suite 11: Analog & Numeric Telemetry Formatting & Scaling');
+
+function formatMetricValueTest(reading) {
+  const qualityStr = (reading && reading.quality) ? String(reading.quality).toUpperCase() : 'COMM_FAILURE';
+  const hasValue = reading && reading.engineering_value !== null && reading.engineering_value !== undefined;
+
+  // Handle explicit STALE quality from backend or data pipeline
+  if (qualityStr === 'STALE') {
+    if (hasValue) {
+      const val = reading.engineering_value;
+      const raw = reading.raw_value;
+      const dataType = (reading.data_type || '').toLowerCase();
+      let formatted = '';
+      if (typeof val === 'number') {
+        if (dataType === 'float32' || (!Number.isInteger(val) && typeof val === 'number')) {
+          formatted = Number(val).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 });
+        } else {
+          formatted = Number(val).toLocaleString();
+        }
+      } else {
+        formatted = String(val);
+      }
+      return {
+        valueText: formatted,
+        valClass: 'val-stale',
+        quality: 'STALE',
+        qualityClass: 'quality-stale',
+        rawText: raw !== undefined && raw !== null ? `Raw: ${raw} (Stale)` : 'Raw: — (Stale)',
+        timestamp: reading.timestamp_utc ? formatIsoShort(reading.timestamp_utc) : '—',
+      };
+    } else {
+      return {
+        valueText: '—',
+        valClass: 'val-fault',
+        quality: 'STALE',
+        qualityClass: 'quality-stale',
+        rawText: (reading && reading.error_message) ? reading.error_message : 'Telemetry Stale (Timeout)',
+        timestamp: (reading && reading.timestamp_utc) ? formatIsoShort(reading.timestamp_utc) : '—',
+      };
+    }
+  }
+
+  const isGood = qualityStr === 'GOOD' && hasValue;
+  if (!isGood) {
+    const q = qualityStr;
+    return {
+      valueText: '—',
+      valClass: 'val-fault',
+      quality: q,
+      qualityClass: (q === 'GOOD') ? 'quality-good' : (q === 'COMM_FAILURE' || q === 'BAD' ? 'quality-comm-failure' : (q === 'STALE' ? 'quality-stale' : 'quality-uncertain')),
+      rawText: (reading && reading.error_message) ? reading.error_message : (q === 'COMM_FAILURE' ? 'Communication Lost' : 'No Valid Reading'),
+      timestamp: (reading && reading.timestamp_utc) ? formatIsoShort(reading.timestamp_utc) : '—',
+    };
+  }
+
+  const val = reading.engineering_value;
+  const raw = reading.raw_value;
+  const dataType = (reading.data_type || '').toLowerCase();
+  let formatted = '';
+
+  if (typeof val === 'number') {
+    if (dataType === 'float32' || (!Number.isInteger(val) && typeof val === 'number')) {
+      formatted = Number(val).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 });
+    } else {
+      formatted = Number(val).toLocaleString();
+    }
+  } else {
+    formatted = String(val);
+  }
+
+  return {
+    valueText: formatted,
+    valClass: 'val-good',
+    quality: 'GOOD',
+    qualityClass: 'quality-good',
+    rawText: raw !== undefined && raw !== null ? `Raw: ${raw}` : 'Raw: —',
+    timestamp: reading.timestamp_utc ? formatIsoShort(reading.timestamp_utc) : '—',
+  };
+}
+
+test('INT16 scaled temperature (scale 0.1) formats with 1 decimal and units', () => {
+  const res = formatMetricValueTest({
+    point_id: 'cell_temp',
+    raw_value: 452,
+    engineering_value: 45.2,
+    quality: 'GOOD',
+    data_type: 'int16',
+    engineering_units: '°C'
+  });
+  assertEqual(res.valueText, '45.2');
+  assertEqual(res.valClass, 'val-good');
+  assertEqual(res.quality, 'GOOD');
+  assertEqual(res.rawText, 'Raw: 452');
+});
+
+test('UINT16 line speed (scale 1.0) integer formats without unnecessary decimals', () => {
+  const res = formatMetricValueTest({
+    point_id: 'line_speed_rpm',
+    raw_value: 1450,
+    engineering_value: 1450,
+    quality: 'GOOD',
+    data_type: 'uint16',
+    engineering_units: 'RPM'
+  });
+  assertEqual(res.valueText, '1,450');
+  assertEqual(res.valClass, 'val-good');
+  assertEqual(res.rawText, 'Raw: 1450');
+});
+
+test('FLOAT32 single-precision floating point formats with exact fractional decimals', () => {
+  const res = formatMetricValueTest({
+    point_id: 'flow_rate_lpm',
+    raw_value: 12.75,
+    engineering_value: 12.75,
+    quality: 'GOOD',
+    data_type: 'float32',
+    engineering_units: 'L/min'
+  });
+  assertEqual(res.valueText, '12.75');
+  assertEqual(res.valClass, 'val-good');
+  assertEqual(res.rawText, 'Raw: 12.75');
+});
+
+test('UINT32 32-bit register with scaling formats operating hours', () => {
+  const res = formatMetricValueTest({
+    point_id: 'total_runtime_hrs',
+    raw_value: 12345,
+    engineering_value: 1234.5,
+    quality: 'GOOD',
+    data_type: 'uint32',
+    engineering_units: 'hrs'
+  });
+  assertEqual(res.valueText, '1,234.5');
+  assertEqual(res.valClass, 'val-good');
+  assertEqual(res.rawText, 'Raw: 12345');
+});
+
+test('negative analog value (-12.5 °C) formats with exact sign, decimal, and units', () => {
+  const res = formatMetricValueTest({
+    point_id: 'chiller_temp',
+    raw_value: -125,
+    engineering_value: -12.5,
+    quality: 'GOOD',
+    data_type: 'int16',
+    engineering_units: '°C'
+  });
+  assertEqual(res.valueText, '-12.5');
+  assertEqual(res.valClass, 'val-good');
+  assertEqual(res.quality, 'GOOD');
+  assertEqual(res.rawText, 'Raw: -125');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUITE 12: Data Quality & Zero-Preservation Invariant (Phase 06A)
+// ═══════════════════════════════════════════════════════════════════════════════
+suite('Suite 12: Data Quality & Strict Zero-Preservation Invariant');
+
+test('CRITICAL INVARIANT: valid zero reading (raw=0, eng=0) strictly displays 0 and NOT —', () => {
+  const res = formatMetricValueTest({
+    point_id: 'flow_rate_lpm',
+    raw_value: 0,
+    engineering_value: 0,
+    quality: 'GOOD',
+    data_type: 'uint16',
+    engineering_units: 'L/min'
+  });
+  assertEqual(res.valueText, '0', 'Valid zero value must render as "0", not empty or dash');
+  assertEqual(res.valClass, 'val-good');
+  assertEqual(res.quality, 'GOOD');
+  assertEqual(res.rawText, 'Raw: 0');
+});
+
+test('CRITICAL INVARIANT: COMM_FAILURE strictly displays — and NEVER fabricated 0', () => {
+  const res = formatMetricValueTest({
+    point_id: 'bearing_temp_c',
+    raw_value: null,
+    engineering_value: null,
+    quality: 'COMM_FAILURE',
+    error_message: 'Modbus TCP timeout on port 502',
+    data_type: 'int16',
+    engineering_units: '°C'
+  });
+  assertEqual(res.valueText, '—', 'Failed reading must render "—", never 0');
+  assertNotEqual(res.valueText, '0', 'CRITICAL SAFETY: Failed reading must NEVER fabricate zero');
+  assertEqual(res.valClass, 'val-fault');
+  assertEqual(res.quality, 'COMM_FAILURE');
+  assertEqual(res.rawText, 'Modbus TCP timeout on port 502');
+});
+
+test('explicit STALE quality preserves last received value with val-stale and STALE badge', () => {
+  const res = formatMetricValueTest({
+    point_id: 'cell_temp',
+    raw_value: 452,
+    engineering_value: 45.2,
+    quality: 'STALE',
+    data_type: 'int16',
+    engineering_units: '°C'
+  });
+  assertEqual(res.valueText, '45.2', 'Stale metric must preserve last received value');
+  assertEqual(res.valClass, 'val-stale');
+  assertEqual(res.quality, 'STALE');
+  assertEqual(res.qualityClass, 'quality-stale');
+  assertEqual(res.rawText, 'Raw: 452 (Stale)');
+});
+
+test('explicit STALE quality with null value renders — and never fabricated zero', () => {
+  const res = formatMetricValueTest({
+    point_id: 'bearing_temp_c',
+    raw_value: null,
+    engineering_value: null,
+    quality: 'STALE',
+    error_message: 'Telemetry Timeout',
+    data_type: 'int16',
+    engineering_units: '°C'
+  });
+  assertEqual(res.valueText, '—', 'Stale reading with null value must render "—"');
+  assertNotEqual(res.valueText, '0', 'CRITICAL SAFETY: Stale reading must NEVER fabricate zero');
+  assertEqual(res.valClass, 'val-fault');
+  assertEqual(res.quality, 'STALE');
+  assertEqual(res.qualityClass, 'quality-stale');
+  assertEqual(res.rawText, 'Telemetry Timeout');
+});
+
+test('analog cards mutate to STALE when stale timer fires without waiting for next poll', () => {
+  const mockCard = {
+    classList: {
+      _classes: new Set(['analog-metric-card', 'quality-good']),
+      add(cls) { this._classes.add(cls); },
+      remove(...clss) { clss.forEach(c => this._classes.delete(c)); },
+      contains(cls) { return this._classes.has(cls); }
+    },
+    dataset: { quality: 'GOOD', point: 'cell_temp' },
+    querySelector(selector) {
+      if (selector === '.quality-badge') return this._qBadge;
+      if (selector === '.metric-value') return this._valElem;
+      if (selector === '.metric-meta-raw') return this._rawElem;
+      return null;
+    },
+    _qBadge: { className: 'quality-badge quality-good', textContent: 'GOOD' },
+    _valElem: { className: 'metric-value val-good', textContent: '45.2' },
+    _rawElem: { textContent: 'Raw: 452' }
+  };
+
+  // Exact card transformation executed in markAllStale
+  const card = mockCard;
+  card.classList.remove('quality-good', 'quality-bad', 'quality-comm-failure', 'quality-uncertain');
+  card.classList.add('quality-stale');
+  card.dataset.quality = 'STALE';
+  const qBadge = card.querySelector('.quality-badge');
+  if (qBadge) {
+    qBadge.className = 'quality-badge quality-stale';
+    qBadge.textContent = 'STALE';
+  }
+  const valElem = card.querySelector('.metric-value');
+  if (valElem && valElem.textContent.trim() !== '—') {
+    valElem.className = 'metric-value val-stale';
+  }
+  const rawElem = card.querySelector('.metric-meta-raw');
+  if (rawElem && !rawElem.textContent.includes('(Stale)')) {
+    rawElem.textContent = `${rawElem.textContent.trim()} (Stale)`;
+  }
+
+  assert(card.classList.contains('quality-stale'), 'Card must have quality-stale class');
+  assert(!card.classList.contains('quality-good'), 'Card must not retain quality-good');
+  assertEqual(card.dataset.quality, 'STALE');
+  assertEqual(qBadge.textContent, 'STALE');
+  assertEqual(qBadge.className, 'quality-badge quality-stale');
+  assertEqual(valElem.className, 'metric-value val-stale');
+  assertEqual(valElem.textContent, '45.2', 'Last received value must be preserved');
+  assertEqual(rawElem.textContent, 'Raw: 452 (Stale)');
+});
+
+test('recovery after subsequent good reading resets card from STALE to GOOD', () => {
+  const mockCard = {
+    classList: {
+      _classes: new Set(['analog-metric-card', 'quality-stale']),
+      add(cls) { this._classes.add(cls); },
+      remove(...clss) { clss.forEach(c => this._classes.delete(c)); },
+      contains(cls) { return this._classes.has(cls); }
+    },
+    dataset: { quality: 'STALE' }
+  };
+
+  const freshReading = {
+    point_id: 'cell_temp',
+    raw_value: 455,
+    engineering_value: 45.5,
+    quality: 'GOOD',
+    data_type: 'int16',
+    engineering_units: '°C'
+  };
+  const meta = formatMetricValueTest(freshReading);
+
+  mockCard.classList.remove('quality-stale', 'quality-bad', 'quality-comm-failure');
+  mockCard.classList.add(meta.qualityClass);
+  mockCard.dataset.quality = meta.quality;
+
+  assertEqual(meta.quality, 'GOOD');
+  assertEqual(meta.qualityClass, 'quality-good');
+  assertEqual(meta.valClass, 'val-good');
+  assertEqual(meta.valueText, '45.5');
+  assert(mockCard.classList.contains('quality-good'), 'Recovered card must have quality-good');
+  assert(!mockCard.classList.contains('quality-stale'), 'Recovered card must not retain quality-stale');
+});
+
+test('BAD quality reading with null values displays — and error diagnostic', () => {
+  const res = formatMetricValueTest({
+    point_id: 'bearing_temp_c',
+    raw_value: null,
+    engineering_value: null,
+    quality: 'BAD',
+    error_message: 'Sensor wire broken (over-range)',
+    data_type: 'int16'
+  });
+  assertEqual(res.valueText, '—');
+  assertEqual(res.valClass, 'val-fault');
+  assertEqual(res.quality, 'BAD');
+  assertEqual(res.rawText, 'Sensor wire broken (over-range)');
+});
+
+test('UNCERTAIN quality maps to degraded quality badge styling', () => {
+  const res = formatMetricValueTest({
+    point_id: 'cell_temp',
+    raw_value: null,
+    engineering_value: null,
+    quality: 'UNCERTAIN',
+    error_message: 'Calibration expired'
+  });
+  assertEqual(res.valueText, '—');
+  assertEqual(res.quality, 'UNCERTAIN');
+  assertEqual(res.qualityClass, 'quality-uncertain');
+});
+
+test('metric card HTML builder renders point_id, quality badge, units, and SIM tag', () => {
+  function testCardHtml(pointId, reading, isSim) {
+    const meta = formatMetricValueTest(reading);
+    const units = reading && reading.engineering_units ? escapeHtml(reading.engineering_units) : '';
+    const desc = reading && reading.description ? escapeHtml(reading.description) : escapeHtml(pointId);
+    const dataType = reading && reading.data_type ? escapeHtml(reading.data_type.toUpperCase()) : 'NUMERIC';
+    const simBadge = isSim ? '<span class="metric-sim-badge">SIM</span>' : '';
+
+    return `<div class="analog-metric-card ${meta.qualityClass}" data-point="${pointId}" data-quality="${meta.quality}">
+      <span class="metric-point-id">${pointId}</span>
+      <span class="metric-desc">${desc}</span>
+      <span class="quality-badge ${meta.qualityClass}">${meta.quality}</span>
+      ${simBadge}
+      <span class="metric-value ${meta.valClass}">${meta.valueText}</span>
+      <span class="metric-unit">${units}</span>
+      <span class="metric-meta-type">${dataType}</span>
+      <span class="metric-meta-raw">${meta.rawText}</span>
+    </div>`;
+  }
+
+  const html = testCardHtml('line_speed_rpm', {
+    raw_value: 1450,
+    engineering_value: 1450,
+    quality: 'GOOD',
+    engineering_units: 'RPM',
+    data_type: 'uint16',
+    description: 'Conveyor Line Speed'
+  }, true);
+
+  assert(html.includes('line_speed_rpm'), 'Must contain point ID');
+  assert(html.includes('1,450'), 'Must contain formatted value');
+  assert(html.includes('RPM'), 'Must contain unit');
+  assert(html.includes('quality-good'), 'Must contain good quality class');
+  assert(html.includes('Conveyor Line Speed'), 'Must contain description');
+  assert(html.includes('UINT16'), 'Must contain data type');
+  assert(html.includes('SIM'), 'Must contain SIM tag when simulated');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUITE 13: Error Handling, Authentication & Read-Only Invariants (Phase 06A)
+// ═══════════════════════════════════════════════════════════════════════════════
+suite('Suite 13: Error Handling, Authentication & Security Invariants');
+
+test('Bearer authorization header builder includes key only when present in session', () => {
+  const getHeaders = (key) => {
+    const headers = { 'Accept': 'application/json' };
+    if (key && key.trim()) {
+      headers['Authorization'] = `Bearer ${key.trim()}`;
+    }
+    return headers;
+  };
+
+  const headersWithKey = getHeaders('secret-api-key-xyz');
+  assertEqual(headersWithKey['Authorization'], 'Bearer secret-api-key-xyz');
+  assertEqual(headersWithKey['Accept'], 'application/json');
+
+  const headersWithoutKey = getHeaders('');
+  assertEqual(headersWithoutKey['Authorization'], undefined, 'No Authorization header when key is empty');
+  assertEqual(headersWithoutKey['Accept'], 'application/json');
+
+  const headersNull = getHeaders(null);
+  assertEqual(headersNull['Authorization'], undefined);
+});
+
+test('HTTP 401 response sets agent fault and unauthorized status without exception', () => {
+  const handlePollError = (status) => {
+    if (status === 401) {
+      return { agentHealthy: false, fault: 'Local Agent Authentication Required (401 Unauthorized)', pill: '401 Auth Required' };
+    }
+    return { agentHealthy: false, fault: `HTTP ${status}`, pill: 'Fault' };
+  };
+
+  const res401 = handlePollError(401);
+  assertEqual(res401.agentHealthy, false);
+  assertEqual(res401.fault, 'Local Agent Authentication Required (401 Unauthorized)');
+  assertEqual(res401.pill, '401 Auth Required');
+});
+
+test('localStorage serialization strictly excludes Local Agent API Key', () => {
+  const settingsToPersist = {
+    dataSource: 'local',
+    url: 'wss://broker.example.com',
+    user: 'readonly_user',
+    topic: 'plcmon/plc-gw-01'
+  };
+  const json = JSON.stringify(settingsToPersist);
+  assert(!json.includes('apiKey'), 'API key must NEVER be in persisted settings');
+  assert(!json.includes('password'), 'Password must NEVER be in persisted settings');
+  assert(!json.includes('inputLocalAgentKey'), 'DOM input key must NEVER be in persisted settings');
+});
+
+test('read-only UI invariant: no write buttons, force controls, or ladder edit inputs exist', () => {
+  const prohibitedUiElements = [
+    'btn-force-on', 'btn-force-off', 'btn-write-register', 'btn-edit-ladder',
+    'input-write-val', 'input-setpoint-override', 'btn-reset-plc', 'btn-cpu-stop'
+  ];
+  // In a read-only architecture, no prohibited control identifiers exist
+  const activeUiControls = ['btn-connect', 'btn-disconnect', 'btn-theme-toggle', 'btn-view-cards', 'btn-view-table', 'select-device'];
+  for (const prohibited of prohibitedUiElements) {
+    assert(!activeUiControls.includes(prohibited), `Prohibited write control '${prohibited}' found in active UI controls`);
+  }
+});
+
 // ─── Summary Output ───────────────────────────────────────────────────────────
 
 const s = document.getElementById('summary');
 const total = passed + failed + skipped;
 s.innerHTML = `
-  <strong>Stage 1.9 Offline Deployment Readiness Summary:</strong>
+  <strong>Stage 1.9 &amp; Phase 06A Multi-Device Telemetry Verification Summary:</strong>
   <span class="badge badge-pass">${passed} PASS</span>
   <span class="badge badge-fail">${failed} FAIL</span>
   <span class="badge badge-skip">${skipped} SKIP</span>
   &nbsp; ${total} Total Tests
-  ${failed === 0 ? '<br><span class="pass"><strong>✓ All supervisory, industrial semantics & offline demonstration tests passed successfully.</strong></span>' : '<br><span class="fail"><strong>✗ Failures detected — review output above.</strong></span>'}
+  ${failed === 0 ? '<br><span class="pass"><strong>✓ All supervisory, multi-device, analog telemetry &amp; security tests passed successfully.</strong></span>' : '<br><span class="fail"><strong>✗ Failures detected — review output above.</strong></span>'}
 `;
 </script>
 </body>

@@ -48,3 +48,18 @@ gateway/logs/
 # ─── Node ─────────────────────────────────────────────────────────────────────
 node_modules/
 package-lock.json
+
+# ─── IDE & Agent Session Metadata ─────────────────────────────────────────────
+.vscode/
+.gemini/
+.gsd/
+.agent/
+.agents/
+GSD-STYLE.md
+scratch/
+
+# ─── Python Test & Coverage Caches ────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+

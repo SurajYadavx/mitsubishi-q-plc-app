@@ -58,10 +58,11 @@
       <div class="brand-text">
         <div class="brand-title-row">
           <h1 class="brand-title">Q-PLC SUPERVISORY MONITOR</h1>
-          <span class="plc-model-badge" title="MELSEC-Q Universal CPU with built-in Ethernet">Q03UDECPU</span>
+          <span class="plc-model-badge" id="header-model-badge" title="MELSEC-Q Universal CPU with built-in Ethernet">Q03UDECPU</span>
           <span class="system-mode-tag" id="header-mode-tag" title="System operates exclusively in read-only telemetry mode">READ-ONLY</span>
+          <span class="system-mode-tag mode-sim-badge" id="header-sim-badge" style="display:none; background: rgba(227, 98, 9, 0.2); color: #f0883e; border: 1px solid rgba(227, 98, 9, 0.4); margin-left: 6px; font-weight: 700;" title="Operating in virtual simulation mode — physical PLC hardware not verified">SIMULATION (VIRTUAL)</span>
         </div>
-        <p class="brand-subtitle">MC Protocol 3E / TCP &bull; Port 5010 &bull; Binary Frame Monitoring</p>
+        <p class="brand-subtitle" id="header-brand-subtitle">MC Protocol 3E / TCP &bull; Port 5010 &bull; Binary Frame Monitoring</p>
       </div>
     </div>
 
@@ -69,17 +70,17 @@
     <div class="header-path-status" role="status" aria-label="5-tier communication topology health">
       <div class="path-strip" title="Live signal communication path">
         <!-- Node 1: PLC -->
-        <div class="path-node" id="pill-plc" title="Mitsubishi Q03UDECPU PLC via MC Protocol 3E">
+        <div class="path-node" id="pill-plc" title="Target PLC Controller">
           <span class="status-dot dot-off" id="dot-plc" aria-hidden="true"></span>
           <span class="path-label">PLC</span>
           <span class="path-val" id="text-plc">Unknown</span>
         </div>
         <span class="path-arrow" aria-hidden="true">&rarr;</span>
         
-        <!-- Node 2: Gateway -->
-        <div class="path-node" id="pill-gw" title="Python Gateway host daemon (COM9)">
+        <!-- Node 2: Gateway / Local Agent -->
+        <div class="path-node" id="pill-gw" title="Telemetry Ingestion Host">
           <span class="status-dot dot-off" id="dot-gw" aria-hidden="true"></span>
-          <span class="path-label">GW</span>
+          <span class="path-label" id="label-pill-gw">GW</span>
           <span class="path-val" id="text-gw">Unknown</span>
         </div>
         <span class="path-arrow" aria-hidden="true">&rarr;</span>
@@ -93,7 +94,7 @@
         <span class="path-arrow" aria-hidden="true">&rarr;</span>
 
         <!-- Node 4: MQTT Broker -->
-        <div class="path-node" id="pill-mqtt" title="HiveMQ Cloud MQTT/WSS Broker">
+        <div class="path-node" id="pill-mqtt" title="EMQX Cloud MQTT/WSS Broker">
           <span class="status-dot dot-off" id="dot-mqtt" aria-hidden="true"></span>
           <span class="path-label">BROKER</span>
           <span class="path-val" id="text-mqtt">Disconnected</span>
@@ -146,6 +147,14 @@
           <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
           Settings
         </button>
+      </div>
+
+      <!-- Universal Multi-Device Controller Selector -->
+      <div class="nav-device-selector" id="nav-device-selector-wrap" title="Active Monitored Controller Target">
+        <label for="select-device" class="device-select-label">Target PLC:</label>
+        <select id="select-device" class="select-device-industrial" aria-label="Select target monitored PLC device">
+          <option value="melsec_q03" selected>Laboratory Mitsubishi MELSEC-Q [melsec_q03]</option>
+        </select>
       </div>
     </div>
   </nav>
@@ -228,10 +237,10 @@
         <span class="kpi-val mono" id="meta-gateway-id">&mdash;</span>
         <span class="kpi-sub">Configured Daemon</span>
       </div>
-      <div class="kpi-card">
-        <span class="kpi-label">ACTIVE POINTS</span>
+      <div class="kpi-card" title="Counts digital channels energized HIGH (1), valid low/de-energized (0), and unverified/unknown">
+        <span class="kpi-label">ENERGIZED (ON)</span>
         <span class="kpi-val mono" id="meta-active-count">0 / 16 ON</span>
-        <span class="kpi-sub" id="meta-unknown-count">0 unknown</span>
+        <span class="kpi-sub" id="meta-unknown-count">0 OFF &bull; 16 UNKNOWN</span>
       </div>
     </div>
 
@@ -250,11 +259,11 @@
 
       <div class="operational-signal-grid">
         
-        <!-- Verified Signal Pair: X3 (Trigger) -> Y20 (Master Relay) -->
+        <!-- Signal Pair: X3 (Trigger) -> Y20 (Master Relay) -->
         <div class="verified-pair-panel">
           <div class="pair-header">
-            <span class="pair-tag">VERIFIED LADDER RUNG 0001 SIGNALS</span>
-            <span class="pair-note">Autonomous CPU Logic: X3 &rarr; Y20</span>
+            <span class="pair-tag" id="pair-tag-heading">REFERENCE LADDER RUNG 0001 (X3 &rarr; Y20)</span>
+            <span class="pair-note" id="pair-tag-subnote">Autonomous Scan Reference: X3 &rarr; Y20 (Hardware Not Verified)</span>
           </div>
 
           <div class="pair-nodes">
@@ -335,6 +344,22 @@
       </div>
     </div>
 
+    <!-- Active Device Analog & Process KPI Strip (Overview) -->
+    <div class="card analog-overview-card" id="overview-analog-card" style="display:none;" aria-labelledby="overview-analog-heading">
+      <div class="card-header">
+        <div class="card-header-main">
+          <h2 id="overview-analog-heading" class="card-title io-title io-title--analog">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+            Active Process Telemetry &bull; Analog Registers
+          </h2>
+          <span class="card-tag-sub" id="overview-analog-sub">Engineering Units &bull; Scaled Values</span>
+        </div>
+      </div>
+      <div class="analog-grid analog-overview-grid" id="overview-analog-grid">
+        <!-- Dynamically populated by app.js -->
+      </div>
+    </div>
+
     <!-- 3. Subsystem Health Matrix & Communication Diagnostics -->
     <div class="card subsystem-health-card">
       <div class="card-header">
@@ -348,33 +373,33 @@
       </div>
 
       <div class="subsystem-grid">
-        <!-- Node 1: Mitsubishi Q PLC -->
+        <!-- Node 1: Target PLC Controller -->
         <div class="subsystem-card" id="subsystem-plc">
           <div class="subsystem-card-top">
             <div class="subsystem-icon-title">
               <span class="subsystem-tag">PLC CONTROLLER</span>
-              <h3 class="subsystem-name">Mitsubishi Q03UDECPU</h3>
+              <h3 class="subsystem-name" id="name-subsystem-plc">Mitsubishi Q03UDECPU</h3>
             </div>
-            <span class="node-badge" id="badge-subsystem-plc">UNKNOWN</span>
+            <span class="node-badge" id="badge-subsystem-plc">NOT VERIFIED</span>
           </div>
           <div class="subsystem-card-meta">
-            <div class="meta-line"><span>Interface:</span> <strong>MC 3E / TCP (5010)</strong></div>
-            <div class="meta-line"><span>Status:</span> <span class="mono-status" id="detail-subsystem-plc">Link not verified</span></div>
+            <div class="meta-line"><span>Interface:</span> <strong id="interface-subsystem-plc">MC 3E / TCP (5010)</strong></div>
+            <div class="meta-line"><span>Status:</span> <span class="mono-status" id="detail-subsystem-plc">Awaiting telemetry verification</span></div>
           </div>
         </div>
 
-        <!-- Node 2: Python Gateway Host -->
+        <!-- Node 2: Ingestion Host / Local Agent -->
         <div class="subsystem-card" id="subsystem-gw">
           <div class="subsystem-card-top">
             <div class="subsystem-icon-title">
-              <span class="subsystem-tag">HOST GATEWAY</span>
-              <h3 class="subsystem-name">Python Daemon</h3>
+              <span class="subsystem-tag">HOST INGESTION</span>
+              <h3 class="subsystem-name" id="name-subsystem-gw">Windows Local Agent</h3>
             </div>
-            <span class="node-badge" id="badge-subsystem-gw">UNKNOWN</span>
+            <span class="node-badge" id="badge-subsystem-gw">STANDBY</span>
           </div>
           <div class="subsystem-card-meta">
-            <div class="meta-line"><span>Port:</span> <strong>COM9 @ 115.2k baud</strong></div>
-            <div class="meta-line"><span>Status:</span> <span class="mono-status" id="detail-subsystem-gw">Awaiting serial stream</span></div>
+            <div class="meta-line"><span>Interface:</span> <strong id="interface-subsystem-gw">REST HTTP (Port 8000)</strong></div>
+            <div class="meta-line"><span>Status:</span> <span class="mono-status" id="detail-subsystem-gw">Awaiting ingestion service</span></div>
           </div>
         </div>
 
@@ -385,11 +410,11 @@
               <span class="subsystem-tag">EDGE BRIDGE</span>
               <h3 class="subsystem-name">NodeMCU ESP8266</h3>
             </div>
-            <span class="node-badge" id="badge-subsystem-esp">UNKNOWN</span>
+            <span class="node-badge" id="badge-subsystem-esp">NOT IN USE</span>
           </div>
           <div class="subsystem-card-meta">
             <div class="meta-line"><span>Uplink:</span> <strong>Wi-Fi &bull; TLS 1.2 (8883)</strong></div>
-            <div class="meta-line"><span>Status:</span> <span class="mono-status" id="detail-subsystem-esp">No heartbeat received</span></div>
+            <div class="meta-line"><span>Status:</span> <span class="mono-status" id="detail-subsystem-esp">Hardware bridge unused in local agent mode</span></div>
           </div>
         </div>
 
@@ -398,30 +423,30 @@
           <div class="subsystem-card-top">
             <div class="subsystem-icon-title">
               <span class="subsystem-tag">CLOUD BROKER</span>
-              <h3 class="subsystem-name">HiveMQ Cloud</h3>
+              <h3 class="subsystem-name">EMQX Cloud</h3>
             </div>
-            <span class="node-badge" id="badge-subsystem-mqtt">OFFLINE</span>
+            <span class="node-badge" id="badge-subsystem-mqtt">NOT IN USE</span>
           </div>
           <div class="subsystem-card-meta">
-            <div class="meta-line"><span>Client:</span> <strong>WSS TLS (Port 8884)</strong></div>
-            <div class="meta-line"><span>Status:</span> <span class="mono-status" id="detail-subsystem-mqtt">Client disconnected</span></div>
+            <div class="meta-line"><span>Client:</span> <strong>WSS TLS (Port 8084)</strong></div>
+            <div class="meta-line"><span>Status:</span> <span class="mono-status" id="detail-subsystem-mqtt">MQTT broker unused in local agent mode</span></div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 4. Verified Ladder Program Logic Tracking -->
+    <!-- 4. Ladder Program Logic Reference -->
     <div class="card ladder-summary-card">
       <div class="card-header">
         <div class="card-header-main">
           <h2 class="card-title">
             <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z" clip-rule="evenodd"/></svg>
-            Verified Ladder Program Logic Tracking
+            Ladder Logic Reference Model
           </h2>
           <span class="ladder-mnemonic-tag">Rung 0001: <code>LD X003</code> &rarr; <code>OUT Y020</code></span>
         </div>
         <div class="ladder-header-badges">
-          <span class="status-verified-badge" title="Verified against physical PLC GX Works2 project">GX Works2 Verified</span>
+          <span class="status-verified-badge" id="badge-ladder-verified" title="Ladder logic reference model">REFERENCE MODEL</span>
           <span class="ladder-mode-badge" id="ladder-mode-badge">AWAITING TELEMETRY</span>
         </div>
       </div>
@@ -540,10 +565,10 @@
     </div>
 
     <!-- Collapsible Ladder Logic Reference -->
-    <div class="card ladder-io-card" id="ladder-io-card" role="region" aria-label="Verified Ladder Logic Rung Reference">
+    <div class="card ladder-io-card" id="ladder-io-card" role="region" aria-label="Ladder Logic Rung Reference">
       <div class="ladder-io-header">
         <div class="ladder-io-title-wrap">
-          <span class="status-verified-badge">Verified Rung Reference</span>
+          <span class="status-verified-badge" id="badge-io-ladder-ref">Reference Rung Specification</span>
           <span class="ladder-io-title">Rung 0001: Contact <code>X3</code> (Pushbutton) &rarr; Coil <code>Y20</code> (Master Relay)</span>
         </div>
         <span class="ladder-mode-badge" id="ladder-io-mode-badge">AWAITING TELEMETRY</span>
@@ -612,6 +637,22 @@
           </ul>
         </section>
       </div>
+
+      <!-- ANALOG & PROCESS TELEMETRY SECTION -->
+      <section class="card analog-card" id="section-analog-points" aria-labelledby="analog-heading">
+        <div class="card-header">
+          <div class="card-header-main">
+            <h2 id="analog-heading" class="card-title io-title io-title--analog">
+              <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+              Analog &amp; Process Telemetry (Registers &amp; Values)
+            </h2>
+            <span class="io-range-badge" id="analog-count-badge">0 Points</span>
+          </div>
+        </div>
+        <div class="analog-grid" id="analog-grid" role="list" aria-label="Analog telemetry metric cards">
+          <!-- Dynamically populated by app.js -->
+        </div>
+      </section>
     </div>
 
     <!-- ── COMPACT ENGINEERING TABLE VIEW ────────────────────────────────── -->
@@ -794,13 +835,13 @@
             <div class="flow-step-num">3</div>
             <div class="flow-step-body">
               <strong>Edge Microcontroller Bridge (NodeMCU ESP8266)</strong>
-              <p>Arduino C++ firmware <code>plc_monitor.ino</code> reading serial at 115200 baud. Asynchronous Wi-Fi connection with TLS 1.2 client publishing to HiveMQ Cloud.</p>
+              <p>Arduino C++ firmware <code>plc_monitor.ino</code> reading serial at 115200 baud. Asynchronous Wi-Fi connection with TLS 1.2 client publishing to EMQX Cloud Serverless.</p>
             </div>
           </div>
           <div class="flow-step">
             <div class="flow-step-num">4</div>
             <div class="flow-step-body">
-              <strong>Cloud MQTT Broker (HiveMQ Cloud)</strong>
+              <strong>Cloud MQTT Broker (EMQX Cloud)</strong>
               <p>Secure managed broker publishing on <code>plcmon/plc-gw-01/telemetry</code>. Dedicated read-only subscriber account prevents write injection.</p>
             </div>
           </div>
@@ -836,12 +877,27 @@
         </div>
 
         <div class="settings-grid">
-          <div class="form-group span-2">
+          <div class="form-group span-2" id="group-data-source">
+            <label for="select-data-source">Telemetry Data Source</label>
+            <select id="select-data-source" class="select-industrial">
+              <option value="local">Windows Local Agent (Direct HTTP — http://127.0.0.1:8000)</option>
+              <option value="mqtt">Cloud MQTT Broker (EMQX Cloud WSS)</option>
+            </select>
+            <p class="form-hint">Select Windows Local Agent for zero-broker local loopback monitoring, or Cloud MQTT Broker for cloud-hosted monitoring.</p>
+          </div>
+          <div class="form-group span-2" id="group-local-agent-key" style="display:none;">
+            <label for="input-local-agent-key">Local Agent API Key (Optional)</label>
+            <input type="password" id="input-local-agent-key"
+                   placeholder="Enter API key if required by local agent"
+                   autocomplete="off" />
+            <p class="form-hint">Required only if Local Agent was started with --api-key or AGENT_API_KEY.</p>
+          </div>
+          <div class="form-group span-2" id="group-broker-url">
             <label for="input-broker-url">Broker WebSocket URL (WSS)</label>
             <input type="text" id="input-broker-url"
-                   placeholder="wss://xxxx.s1.eu.hivemq.cloud:8884/mqtt"
+                   placeholder="wss://xxxxxx.emqxsl.com:8084/mqtt"
                    aria-describedby="broker-url-hint" autocomplete="off" />
-            <p id="broker-url-hint" class="form-hint">Use WSS URL on port 8884 for HiveMQ Cloud serverless clusters.</p>
+            <p id="broker-url-hint" class="form-hint">Use WSS URL on port 8084 with path /mqtt for EMQX Cloud Serverless clusters.</p>
           </div>
           <div class="form-group">
             <label for="input-broker-user">Read-Only Username</label>

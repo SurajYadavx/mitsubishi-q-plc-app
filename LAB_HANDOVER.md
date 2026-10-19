@@ -23,7 +23,7 @@
   - ESP8266 Board Core: `ESP8266 by ESP8266 Community` (v3.1.2 or higher).
   - Arduino Libraries: `ArduinoJson` (>= 7.0.0), `PubSubClient` (>= 2.8.0).
 - [ ] **Modern Web Browser:** Chrome, Edge, or Firefox supporting secure WebSockets (`wss://`).
-- [ ] **HiveMQ Cloud Free Account:** For hosted MQTT broker (or on-premises Mosquitto broker).
+- [ ] **EMQX Cloud Serverless Account:** For hosted MQTT broker (https://cloud.emqx.com).
 
 ---
 
@@ -40,9 +40,9 @@ Before powering on the system, confirm and record the following lab-specific par
 | **Gateway ID** | `gateway/config/settings.ini` (`[gateway] id`) | Unique Gateway ID | `plc-gw-01` |
 | **Wi-Fi SSID** | `firmware/plc_monitor/secrets.h` | Lab Wi-Fi Name | `your_wifi_ssid_here` |
 | **Wi-Fi Password** | `firmware/plc_monitor/secrets.h` | Lab Wi-Fi Password | `your_wifi_password_here` |
-| **MQTT Host** | `firmware/plc_monitor/secrets.h` | HiveMQ Hostname | `xxxx.s1.eu.hivemq.cloud` |
+| **MQTT Host** | `firmware/plc_monitor/secrets.h` | EMQX Hostname | `xxxx.emqxsl.com` |
 | **MQTT Port (Device)** | `firmware/plc_monitor/secrets.h` | TLS Native MQTT | `8883` |
-| **MQTT Port (Browser)**| Web Interface (Settings Tab) | TLS WebSockets (WSS) | `8884` |
+| **MQTT Port (Browser)**| Web Interface (Settings Tab) | TLS WebSockets (WSS) | `8084` |
 | **Browser Username** | Web Interface (Settings Tab) | Subscribe-only user | `browser_readonly` |
 | **Topic Prefix** | Web Interface & Settings | Telemetry Root | `plcmon/plc-gw-01` |
 
@@ -143,7 +143,7 @@ INFO  PASS - PLC TCP connection established
 > [!WARNING]
 > Ensure `gateway.py` is **NOT** running before flashing, as COM9 cannot be shared.
 1. Copy `firmware/plc_monitor/secrets.h.example` to `firmware/plc_monitor/secrets.h`.
-2. Fill in Wi-Fi SSID, Wi-Fi password, HiveMQ hostname, and device credentials (`esp8266_device`).
+2. Fill in Wi-Fi SSID, Wi-Fi password, EMQX hostname, and device credentials (`plc_monitor_device`).
 3. Open `firmware/plc_monitor/plc_monitor.ino` in Arduino IDE.
 4. Select Board: `NodeMCU 1.0 (ESP-12E Module)`, Port: `COM9`, Upload Speed: `115200`.
 5. Click **Upload** (Ctrl+U).
@@ -151,7 +151,7 @@ INFO  PASS - PLC TCP connection established
    ```text
    [SYS] PLC Monitor firmware starting…
    [WiFi] Connected, IP: 192.168.x.x
-   [MQTT] Connecting to xxxx.s1.eu.hivemq.cloud:8883
+   [MQTT] Connecting to xxxx.emqxsl.com:8883
    [MQTT] Connected
    ```
 
@@ -172,9 +172,9 @@ INFO  PLC TCP socket connected
 The NodeMCU onboard LED will blink as telemetry JSON lines are forwarded to MQTT.
 
 ### Step 5: Verify Cloud MQTT Topics
-*Purpose:* Verify HiveMQ Cloud broker receives telemetry.
-1. Log into [HiveMQ Cloud Web Client](https://console.hivemq.cloud).
-2. Connect using browser read-only credentials.
+*Purpose:* Verify EMQX Cloud broker receives telemetry.
+1. Log into EMQX Cloud Console or connect MQTTX desktop client.
+2. Connect using browser read-only credentials (`browser_readonly`).
 3. Subscribe to topic `plcmon/plc-gw-01/#`.
 4. Confirm incoming JSON frames on `plcmon/plc-gw-01/telemetry` every 1 second and retained status on `plcmon/plc-gw-01/status`.
 
@@ -182,7 +182,7 @@ The NodeMCU onboard LED will blink as telemetry JSON lines are forwarded to MQTT
 *Purpose:* Verify end-to-end telemetry presentation.
 1. Open the dashboard locally (`http://localhost:8080/index.html`) or at your GitHub Pages URL.
 2. In the **Settings** tab:
-   - Enter Broker WSS URL: `wss://xxxx.s1.eu.hivemq.cloud:8884/mqtt`
+   - Enter Broker WSS URL: `wss://xxxx.emqxsl.com:8084/mqtt`
    - Enter Read-Only Username: `browser_readonly`
    - Enter Password.
    - Confirm Topic Prefix: `plcmon/plc-gw-01`.
@@ -204,7 +204,7 @@ The NodeMCU onboard LED will blink as telemetry JSON lines are forwarded to MQTT
 | **Step 2: Serial Check** | `DeviceID: COM9, USB-SERIAL CH340` | Device Manager shows active COM port |
 | **Step 3: Firmware Flash** | `[WiFi] Connected`, `[MQTT] Connected` | NodeMCU blue onboard LED flashes once |
 | **Step 4: Gateway Startup**| `Gateway starting`, `PLC TCP connected` | NodeMCU RX LED pulses rhythmically every 1s |
-| **Step 5: Cloud Ingestion**| Payload visible on `plcmon/.../telemetry` | HiveMQ console message throughput increments |
+| **Step 5: Cloud Ingestion**| Payload visible on `plcmon/.../telemetry` | EMQX console message throughput increments |
 | **Step 6: Supervisory HMI**| Header dots turn GREEN, Freshness reads `LIVE` | Pressing `X3` lights UI contact and relay `Y20` |
 
 ---
@@ -235,14 +235,14 @@ The NodeMCU onboard LED will blink as telemetry JSON lines are forwarded to MQTT
 ### 4. ESP8266 `[MQTT] Failed, rc=5` or `rc=-2`
 - **Cause:** `rc=5`: Authentication rejected. `rc=-2`: Cannot reach broker host or port blocked.
 - **Troubleshooting:**
-  1. Check HiveMQ cluster hostname in `secrets.h`.
-  2. Verify `esp8266_device` username and password under HiveMQ Cloud Access Management.
+  1. Check EMQX cluster hostname in `secrets.h`.
+  2. Verify `plc_monitor_device` username and password under EMQX Cloud Authentication.
   3. Ensure port `8883` is not blocked by local network firewall.
 
 ### 5. Browser HMI Displays `Broker ACL Rejection (QoS 128)`
 - **Cause:** The credentials used in the browser do not have permission to subscribe to `plcmon/plc-gw-01/#`.
 - **Troubleshooting:**
-  1. In HiveMQ Cloud Access Management, edit user `browser_readonly`.
+  1. In EMQX Cloud Authorization (ACL), edit user `browser_readonly`.
   2. Grant **Subscribe** permission to `plcmon/#`.
   3. Ensure publish permission is NOT granted.
 
@@ -256,7 +256,7 @@ To maintain strict engineering integrity, observe the distinction between what h
 |---|---|---|
 | **PLC Communication** | Address translation logic, dataclass serialisation, 3E socket configuration schema, timeout handling. | Physical TCP socket negotiation with Q03UDECPU, hardware scan cycle latency. |
 | **Serial Gateway** | Newline-delimited JSON framing, sequence monotonicity, heartbeat generator, error handling. | Windows serial driver hardware performance on COM9 with CH340 chip. |
-| **NodeMCU Firmware** | Arduino sketch syntax, PubSubClient topic definitions, non-blocking Wi-Fi loop, JSON parsing. | Physical Wi-Fi RF handshake, ESP8266 TLS 1.2 certificate exchange with HiveMQ. |
+| **NodeMCU Firmware** | Arduino sketch syntax, PubSubClient topic definitions, non-blocking Wi-Fi loop, JSON parsing. | Physical Wi-Fi RF handshake, ESP8266 TLS 1.2 certificate exchange with EMQX. |
 | **Supervisory Frontend** | ISA-101 5-tab HMI, dark/light themes, offline demo simulation with 5 fault scenarios, static ladder rung continuity, CSV export, duplicate/out-of-order/retained packet rejection, mobile layout. | Live WebSocket throughput through internet proxies and mobile carrier networks. |
 | **Control Safety** | Strictly read-only codebase (no `0x1401` PLC write commands, no MQTT write topics, no output forcing). | N/A (Guaranteed by static architecture). |
 

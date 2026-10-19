@@ -12,7 +12,7 @@ PLC (192.168.3.39:5010, MC Protocol)
   → Windows Gateway (Python, pymcprotocol)
     → USB Serial JSON (COM9, 115200 baud)
       → NodeMCU ESP8266 (Arduino firmware)
-        → Wi-Fi → MQTT/TLS (HiveMQ Cloud)
+        → Wi-Fi → MQTT/TLS (EMQX Cloud)
           → GitHub Pages Dashboard (MQTT.js / WSS)
 ```
 
@@ -60,7 +60,7 @@ mitsubishi-q-plc-app/
 
 For physical lab integration and on-site hardware commissioning, refer directly to the **[Lab Handover Procedure & Integration Runbook](LAB_HANDOVER.md)** for:
 - Required hardware/software checklists
-- Lab configuration checklist (PLC IP, COM port, HiveMQ broker)
+- Lab configuration checklist (PLC IP, COM port, EMQX Cloud broker)
 - Exact sequential execution steps (PLC smoke-test → serial verification → firmware flashing → gateway startup → MQTT validation → browser verification)
 - Diagnostic success indicators and recovery playbooks for common connection failures
 - Boundary between verified offline behavior and unverified live behavior
@@ -92,14 +92,14 @@ See [docs/gateway-setup.md](docs/gateway-setup.md) for full instructions.
 
 See [docs/firmware-setup.md](docs/firmware-setup.md) for full instructions.
 
-### 3. MQTT Broker (HiveMQ Cloud)
+### 3. MQTT Broker (EMQX Cloud Serverless)
 
-1. Create a free account at https://console.hivemq.cloud
-2. Create a cluster and note the hostname
-3. Create two credential sets:
-   - `esp8266_device_user` — publish to `plcmon/#`
+1. Create a free Serverless deployment at https://www.emqx.com/en/cloud
+2. Note the deployment broker hostname (e.g., `xxxxxx.emqxsl.com`)
+3. Create two client credential sets in **Authentication**:
+   - `plc_monitor_device` — publish to `plcmon/#`
    - `browser_readonly` — subscribe to `plcmon/#` only
-4. Use WebSocket port **8884** (WSS) for the browser
+4. Use WebSocket port **8084** (WSS) with path `/mqtt` for the browser
 5. Use native MQTT TLS port **8883** for the ESP8266
 
 ### 4. Frontend & Offline Execution
@@ -131,6 +131,39 @@ python gateway/test_unit.py
    - **Stale Data (>15s):** Halts telemetry delivery to verify the `TELEMETRY STALE` banner and tile degradation.
    - **Gateway Fault & Recovery:** Simulates host gateway COM9 timeout with automatic recovery after 6 seconds.
 4. **Pause/Resume** and **Reset** controls allow repeatable demonstrations.
+
+### 6. Windows Local Agent REST API (Phase 04A)
+
+The platform provides a strictly read-only local FastAPI service exposing telemetry snapshots, device inventory, and engine diagnostics to local engineering tools, browser frontends, and SCADA overlays over loopback (`127.0.0.1:8000`).
+
+```powershell
+# Run the Local Agent in offline simulation mode:
+.\gateway\.venv\Scripts\python.exe -m agent.cli --simulate
+
+# Run with custom port and API key authentication:
+.\gateway\.venv\Scripts\python.exe -m agent.cli --simulate --port 8000 --api-key your-secret-key
+
+# View interactive OpenAPI / Swagger documentation:
+# Open in browser: http://127.0.0.1:8000/docs
+```
+
+To run the full unit test suite (77 tests covering Core, Modbus, and Local Agent):
+```powershell
+.\gateway\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+#### Read-Only REST Endpoints (`/api/v1`)
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/v1/health` | `GET` | Gateway health, uptime, polling metrics, error count |
+| `/api/v1/devices` | `GET` | List of all configured PLC devices and connection status |
+| `/api/v1/devices/{device_id}` | `GET` | Detailed metadata and point definitions for a device |
+| `/api/v1/devices/{device_id}/telemetry` | `GET` | Latest telemetry snapshot with point values and quality codes |
+| `/api/v1/devices/{device_id}/diagnostics` | `GET` | Adapter-level diagnostics, round-trip times, and error stats |
+| `/api/v1/agent/info` | `GET` | Host OS, Python version, agent version, security profile |
+| `/api/v1/config/status` | `GET` | Active configuration summary with secrets strictly redacted |
+
+> **Security Note:** The Local Agent binds exclusively to `127.0.0.1` by default and rejects non-loopback bindings (`0.0.0.0`) unless `--allow-remote` is explicitly specified. It contains zero write, force, or control endpoints.
 
 ## Supervisory Engineering Features (Stages 1.6 – 1.8)
 
@@ -170,7 +203,7 @@ python gateway/test_unit.py
 | Windows laptop | On the same LAN as the PLC, Python 3.11 installed |
 | NodeMCU ESP8266 | USB cable (data), powered from laptop USB |
 | Wi-Fi router | ESP8266 must reach the internet |
-| HiveMQ Cloud account | Free tier is sufficient |
+| EMQX Cloud account | Serverless free tier is sufficient |
 | GitHub account | For Pages hosting |
 
 ## Verification Milestones
@@ -184,7 +217,7 @@ python gateway/test_unit.py
 | **1.9** | **Offline Deployment Readiness & Lab Preparation: Full config audit, PyPI pymcprotocol fix, Q-series hex addressing, ASCII logs, LAB_HANDOVER.md runbook** | **✅ Complete (107 frontend unit tests, 7 Python suites)** |
 | 2.0 | Physical PLC Ethernet connection & live MC Protocol 3E smoke-test | ⏳ Hardware Required |
 | 3.0 | NodeMCU ESP8266 flashing & serial COM9 forwarding | ⏳ Hardware Required |
-| 4.0 | HiveMQ Cloud broker provisioning & WSS credentials | ⏳ Broker Config Required |
+| 4.0 | EMQX Cloud Serverless broker provisioning & WSS credentials | ⏳ Broker Config Required |
 | 5.0 | End-to-end live telemetry verification & GitHub Pages deployment | ⏳ Hardware + Cloud Required |
 
 ## Security & Public Release Policy

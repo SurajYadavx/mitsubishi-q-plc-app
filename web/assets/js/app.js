@@ -94,6 +94,22 @@ const state = {
   demoSeq:        100,
   demoStep:       0,
   
+  // Windows Local Agent Direct Ingestion
+  dataSource:        'local',    // 'local' | 'mqtt'
+  localAgentActive:  false,
+  localAgentTimerId: null,
+  localAgentDeviceId: null,
+  localAgentApiKey:  '',
+  simulationMode:     false,
+  deviceAdapterId:    null,
+  deviceModel:        null,
+  agentHealthy:       false,
+  agentUptime:        0,
+  devicesList:        [],
+  deviceTelemetry:    {},
+  activeDeviceHasLadderPair: true,
+  hasCustomTableBuilt: false,
+
   // Timers
   ageTimerId:     null,
 };
@@ -105,8 +121,12 @@ let dom = {};
 
 function cacheDomRefs() {
   dom = {
-    // Mode Tag
-    headerModeTag:     $('header-mode-tag'),
+    // Mode Tag & Header Indicators
+    headerModeTag:       $('header-mode-tag'),
+    headerSimBadge:      $('header-sim-badge'),
+    headerBrandSubtitle: $('header-brand-subtitle'),
+    headerModelBadge:    $('header-model-badge'),
+    labelPillGw:         $('label-pill-gw'),
 
     // Theme Controls
     btnThemeToggle:    $('btn-theme-toggle'),
@@ -136,10 +156,16 @@ function cacheDomRefs() {
     selectDemoScenario: $('select-demo-scenario'),
 
     // Overview Tab
-    badgeSubsystemPlc:  $('badge-subsystem-plc'),  detailSubsystemPlc:  $('detail-subsystem-plc'),
-    badgeSubsystemGw:   $('badge-subsystem-gw'),   detailSubsystemGw:   $('detail-subsystem-gw'),
-    badgeSubsystemEsp:  $('badge-subsystem-esp'),  detailSubsystemEsp:  $('detail-subsystem-esp'),
-    badgeSubsystemMqtt: $('badge-subsystem-mqtt'), detailSubsystemMqtt: $('detail-subsystem-mqtt'),
+    badgeSubsystemPlc:     $('badge-subsystem-plc'),  detailSubsystemPlc:  $('detail-subsystem-plc'),
+    badgeSubsystemGw:      $('badge-subsystem-gw'),   detailSubsystemGw:   $('detail-subsystem-gw'),
+    badgeSubsystemEsp:     $('badge-subsystem-esp'),  detailSubsystemEsp:  $('detail-subsystem-esp'),
+    badgeSubsystemMqtt:    $('badge-subsystem-mqtt'), detailSubsystemMqtt: $('detail-subsystem-mqtt'),
+    nameSubsystemPlc:      $('name-subsystem-plc'),   interfaceSubsystemPlc: $('interface-subsystem-plc'),
+    nameSubsystemGw:       $('name-subsystem-gw'),    interfaceSubsystemGw:  $('interface-subsystem-gw'),
+    badgeLadderVerified:   $('badge-ladder-verified'),
+    badgeIoLadderRef:      $('badge-io-ladder-ref'),
+    pairTagHeading:        $('pair-tag-heading'),
+    pairTagSubnote:        $('pair-tag-subnote'),
     
     metaFreshnessState: $('meta-freshness-state'),
     metaFreshnessSub:   $('meta-freshness-sub'),
@@ -210,13 +236,27 @@ function cacheDomRefs() {
     diagClientId:        $('diag-client-id'),
 
     // Settings Tab
-    inputUrl:       $('input-broker-url'),
-    inputUser:      $('input-broker-user'),
-    inputPass:      $('input-broker-pass'),
-    inputTopic:     $('input-topic-prefix'),
-    btnConnect:     $('btn-connect'),
-    btnDisconnect:  $('btn-disconnect'),
-    chkDemo:        $('chk-demo'),
+    selectDataSource:   $('select-data-source'),
+    groupBrokerUrl:     $('group-broker-url'),
+    inputLocalAgentKey: $('input-local-agent-key'),
+    groupLocalAgentKey: $('group-local-agent-key'),
+    inputUrl:           $('input-broker-url'),
+    inputUser:          $('input-broker-user'),
+    inputPass:          $('input-broker-pass'),
+    inputTopic:         $('input-topic-prefix'),
+    btnConnect:         $('btn-connect'),
+    btnDisconnect:      $('btn-disconnect'),
+    chkDemo:            $('chk-demo'),
+
+    // Device Selector & Analog Section (Phase 06A)
+    selectDevice:         $('select-device'),
+    navDeviceSelectorWrap: $('nav-device-selector-wrap'),
+    sectionAnalogPoints:  $('section-analog-points'),
+    analogGrid:           $('analog-grid'),
+    analogCountBadge:     $('analog-count-badge'),
+    overviewAnalogCard:   $('overview-analog-card'),
+    overviewAnalogGrid:   $('overview-analog-grid'),
+    overviewAnalogSub:    $('overview-analog-sub'),
   };
 }
 
@@ -230,6 +270,11 @@ function init() {
   setupEventListeners();
   startAgeTimer();
   restoreSettings();
+  if (isLocalOrigin()) {
+    setDataSource('local', true);
+  } else {
+    setDataSource('mqtt', false);
+  }
   updateSubsystemMatrix();
   updateLadderDiagram(null, null);
 }
@@ -408,6 +453,19 @@ function setupEventListeners() {
   }
 
   // Connection & Demo Actions
+  if (dom.selectDataSource) {
+    dom.selectDataSource.addEventListener('change', e => setDataSource(e.target.value, true));
+  }
+  if (dom.selectDevice) {
+    dom.selectDevice.addEventListener('change', e => {
+      selectDevice(e.target.value);
+    });
+  }
+  if (dom.inputLocalAgentKey) {
+    dom.inputLocalAgentKey.addEventListener('input', e => {
+      state.localAgentApiKey = e.target.value.trim();
+    });
+  }
   if (dom.btnConnect)    dom.btnConnect.addEventListener('click', handleConnect);
   if (dom.btnDisconnect) dom.btnDisconnect.addEventListener('click', handleDisconnect);
   if (dom.chkDemo)       dom.chkDemo.addEventListener('change', handleDemoToggle);
@@ -474,9 +532,10 @@ function applyIoFilters() {
 
 function saveSettings() {
   const s = {
-    url:   dom.inputUrl.value.trim(),
-    user:  dom.inputUser.value.trim(),
-    topic: dom.inputTopic.value.trim(),
+    dataSource: state.dataSource,
+    url:   dom.inputUrl ? dom.inputUrl.value.trim() : '',
+    user:  dom.inputUser ? dom.inputUser.value.trim() : '',
+    topic: dom.inputTopic ? dom.inputTopic.value.trim() : '',
   };
   try { localStorage.setItem('qplc_settings', JSON.stringify(s)); } catch(_) {}
 }
@@ -486,10 +545,617 @@ function restoreSettings() {
     const raw = localStorage.getItem('qplc_settings');
     if (!raw) return;
     const s = JSON.parse(raw);
+    if (s.dataSource && dom.selectDataSource) {
+      if (!isLocalOrigin()) {
+        state.dataSource = s.dataSource;
+        dom.selectDataSource.value = s.dataSource;
+      }
+    }
     if (s.url   && dom.inputUrl)   dom.inputUrl.value   = s.url;
     if (s.user  && dom.inputUser)  dom.inputUser.value  = s.user;
     if (s.topic && dom.inputTopic) dom.inputTopic.value = s.topic;
   } catch(_) {}
+}
+
+// ─── Data Source & Local Agent Controller ─────────────────────────────────────
+
+function isLocalOrigin() {
+  const h = window.location.hostname;
+  return h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || window.location.protocol === 'file:';
+}
+
+function setDataSource(source, autoStart = true) {
+  state.dataSource = source;
+  if (dom.selectDataSource) dom.selectDataSource.value = source;
+
+  const isLocal = source === 'local';
+  if (dom.groupBrokerUrl) dom.groupBrokerUrl.style.display = isLocal ? 'none' : '';
+  if (dom.groupLocalAgentKey) dom.groupLocalAgentKey.style.display = isLocal ? '' : 'none';
+
+  if (dom.btnConnect) {
+    dom.btnConnect.innerHTML = isLocal
+      ? `<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z"/></svg> Start Local Monitoring`
+      : `<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z"/></svg> Connect to Broker`;
+  }
+
+  saveSettings();
+
+  if (isLocal) {
+    if (state.mqttClient) {
+      state.mqttClient.end(true);
+      state.mqttClient = null;
+      state.connected = false;
+    }
+    if (dom.labelPillGw) dom.labelPillGw.textContent = 'AGENT';
+    setStatusPill('mqtt', 'off', 'Not in Use');
+    setStatusPill('esp', 'off', 'Not in Use');
+    setStatusPill('gw', 'off', 'Standby');
+    setStatusPill('plc', 'off', 'Not Verified');
+    if (autoStart) {
+      startLocalAgentMonitoring();
+    }
+  } else {
+    stopLocalAgentMonitoring();
+    if (dom.labelPillGw) dom.labelPillGw.textContent = 'GW';
+    state.simulationMode = false;
+    if (dom.headerSimBadge) dom.headerSimBadge.style.display = 'none';
+    if (dom.headerBrandSubtitle) {
+      dom.headerBrandSubtitle.textContent = 'MC Protocol 3E / TCP • Port 5010 • Binary Frame Monitoring';
+    }
+    setMqttStatus('off', 'Disconnected');
+    setStatusPill('esp', 'off', 'Unknown');
+    setStatusPill('gw', 'off', 'Standby');
+    setStatusPill('plc', 'off', 'Not Verified');
+  }
+  updateSubsystemMatrix();
+}
+
+function getLocalAgentHeaders() {
+  const headers = { 'Accept': 'application/json' };
+  const key = state.localAgentApiKey || (dom.inputLocalAgentKey ? dom.inputLocalAgentKey.value.trim() : '');
+  if (key) {
+    headers['Authorization'] = `Bearer ${key}`;
+  }
+  return headers;
+}
+
+function startLocalAgentMonitoring() {
+  if (state.isDemo) {
+    addHistoryItem('system', 'warn', 'Operation Blocked: Disable Demo mode before starting Local Agent monitoring.');
+    return;
+  }
+  if (state.localAgentActive) return;
+
+  state.localAgentActive = true;
+  if (dom.labelPillGw) dom.labelPillGw.textContent = 'AGENT';
+  setStatusPill('mqtt', 'off', 'Not in Use');
+  setStatusPill('esp', 'off', 'Not in Use');
+  setStatusPill('gw', 'connecting', 'Connecting…');
+  setStatusPill('plc', 'off', 'Not Verified');
+  if (dom.btnConnect) dom.btnConnect.disabled = true;
+  if (dom.btnDisconnect) dom.btnDisconnect.disabled = false;
+  addHistoryItem('system', 'info', 'Initiating Local Agent connection (http://127.0.0.1:8000)...');
+
+  pollLocalAgent();
+  state.localAgentTimerId = setInterval(pollLocalAgent, 1000);
+}
+
+function stopLocalAgentMonitoring() {
+  if (state.localAgentTimerId) {
+    clearInterval(state.localAgentTimerId);
+    state.localAgentTimerId = null;
+  }
+  state.localAgentActive = false;
+  state.plcConnected = false;
+  state.gwActive = false;
+  state.agentHealthy = false;
+  if (dom.btnConnect) dom.btnConnect.disabled = false;
+  if (dom.btnDisconnect) dom.btnDisconnect.disabled = true;
+  if (dom.labelPillGw) dom.labelPillGw.textContent = 'AGENT';
+  setStatusPill('mqtt', 'off', 'Not in Use');
+  setStatusPill('esp', 'off', 'Not in Use');
+  setStatusPill('gw', 'off', 'Standby');
+  setStatusPill('plc', 'off', 'Not Verified');
+  addHistoryItem('system', 'info', 'Local Agent monitoring stopped');
+  markAllStale();
+  updateSubsystemMatrix();
+}
+
+async function pollLocalAgent() {
+  if (!state.localAgentActive) return;
+
+  const baseUrl = window.location.origin.startsWith('http') ? window.location.origin : 'http://127.0.0.1:8000';
+  const headers = getLocalAgentHeaders();
+
+  try {
+    // 1. Ingestion Agent health check & simulation state verification
+    const healthRes = await fetch(`${baseUrl}/api/v1/health`, { headers });
+    if (!healthRes.ok) {
+      if (healthRes.status === 401) {
+        throw new Error('Local Agent Authentication Required (401 Unauthorized)');
+      }
+      throw new Error(`Health check failed: HTTP ${healthRes.status}`);
+    }
+    const healthData = await healthRes.json();
+    state.agentHealthy = (healthData.status === 'healthy' || healthData.status === 'degraded');
+    state.agentUptime = Math.floor(healthData.uptime_seconds || 0);
+    if (healthData.simulation_mode !== undefined) {
+      state.simulationMode = Boolean(healthData.simulation_mode);
+    }
+
+    // 2. Discover registered devices and update dynamic selector
+    const devRes = await fetch(`${baseUrl}/api/v1/devices`, { headers });
+    if (!devRes.ok) {
+      if (devRes.status === 401) {
+        throw new Error('Local Agent Authentication Required (401 Unauthorized)');
+      }
+      throw new Error(`Device discovery failed: HTTP ${devRes.status}`);
+    }
+    const devData = await devRes.json();
+    const devices = Array.isArray(devData) ? devData : (devData.devices || []);
+    state.devicesList = devices;
+
+    if (devices.length > 0) {
+      updateDeviceSelector(devices);
+      // Validate or assign active device id
+      if (!state.localAgentDeviceId || !devices.some(d => (d.id || d.device_id) === state.localAgentDeviceId)) {
+        state.localAgentDeviceId = devices[0].id || devices[0].device_id;
+      }
+      const activeDev = devices.find(d => (d.id || d.device_id) === state.localAgentDeviceId) || devices[0];
+      state.deviceAdapterId = activeDev.adapter_id || null;
+      state.deviceModel = activeDev.model || activeDev.name || null;
+      if (state.deviceAdapterId === 'simulated') {
+        state.simulationMode = true;
+      }
+      if (dom.headerModelBadge) {
+        dom.headerModelBadge.textContent = state.deviceModel || state.localAgentDeviceId;
+      }
+    } else {
+      updateDeviceSelector([]);
+      throw new Error('No configured devices returned by Local Agent');
+    }
+
+    // 3. Normalized device telemetry poll
+    const telRes = await fetch(`${baseUrl}/api/v1/devices/${state.localAgentDeviceId}/telemetry`, { headers });
+    if (!telRes.ok) {
+      if (telRes.status === 401) {
+        throw new Error('Local Agent Authentication Required (401 Unauthorized)');
+      }
+      if (telRes.status === 404) {
+        throw new Error(`Device '${state.localAgentDeviceId}' not found on Local Agent`);
+      }
+      throw new Error(`Telemetry poll failed: HTTP ${telRes.status}`);
+    }
+
+    const telData = await telRes.json();
+    if (telData.simulation_mode !== undefined) {
+      state.simulationMode = Boolean(telData.simulation_mode);
+    }
+
+    // Explicit indicators for Local Agent mode:
+    // MQTT & ESP8266 are unused in direct local loopback mode
+    setStatusPill('mqtt', 'off', 'Not in Use');
+    setStatusPill('esp', 'off', 'Not in Use');
+    if (dom.labelPillGw) dom.labelPillGw.textContent = 'AGENT';
+    setStatusPill('gw', 'ok', 'Running');
+
+    // PLC controller pill reflects verified hardware vs virtual simulation
+    const isConn = telData.connected === true || telData.status === 'online';
+    if (state.simulationMode || state.deviceAdapterId === 'simulated') {
+      setStatusPill('plc', 'warn', 'Simulated');
+    } else if (isConn) {
+      setStatusPill('plc', 'ok', 'Verified Online');
+    } else {
+      setStatusPill('plc', 'error', 'Offline');
+    }
+
+    const activeDev = (state.devicesList || []).find(d => (d.id || d.device_id) === state.localAgentDeviceId);
+    handleLocalAgentTelemetry(telData, activeDev);
+
+  } catch (err) {
+    state.agentHealthy = false;
+    state.stats.lastFault = err.message;
+    if (dom.labelPillGw) dom.labelPillGw.textContent = 'AGENT';
+    setStatusPill('mqtt', 'off', 'Not in Use');
+    setStatusPill('esp', 'off', 'Not in Use');
+    setStatusPill('gw', 'error', err.message.includes('401') ? '401 Auth Required' : 'Fault');
+    setStatusPill('plc', 'off', 'Not Verified');
+    if (dom.diagLastFault) dom.diagLastFault.textContent = err.message;
+    if (dom.selectDevice && err.message.includes('401')) {
+      dom.selectDevice.innerHTML = '<option value="" disabled selected>Authentication Required (HTTP 401)</option>';
+    }
+    addHistoryItem('comm_error', 'warn', `Local Agent: ${err.message}`);
+    markAllStale();
+    updateSubsystemMatrix();
+  }
+}
+
+function updateDeviceSelector(devices) {
+  if (!dom.selectDevice) return;
+  if (!Array.isArray(devices) || devices.length === 0) {
+    dom.selectDevice.innerHTML = '<option value="" disabled selected>No devices configured</option>';
+    return;
+  }
+
+  const currentVal = state.localAgentDeviceId || devices[0].id;
+  const currentOptions = Array.from(dom.selectDevice.options).map(o => o.value);
+  const newOptions = devices.map(d => d.id || d.device_id);
+
+  const optionsChanged = currentOptions.length !== newOptions.length ||
+    newOptions.some((id, idx) => id !== currentOptions[idx]);
+
+  if (optionsChanged || dom.selectDevice.options.length <= 1) {
+    dom.selectDevice.innerHTML = devices.map(d => {
+      const id = d.id || d.device_id;
+      const name = d.name || id;
+      const model = d.model ? ` (${d.model})` : '';
+      const conn = d.connected ? ' • Online' : '';
+      const isSel = id === currentVal ? 'selected' : '';
+      return `<option value="${escapeHtml(id)}" ${isSel}>${escapeHtml(name)}${escapeHtml(model)}${conn}</option>`;
+    }).join('');
+  }
+
+  if (dom.selectDevice.value !== currentVal) {
+    dom.selectDevice.value = currentVal;
+  }
+}
+
+function selectDevice(deviceId) {
+  if (!deviceId) return;
+  state.localAgentDeviceId = deviceId;
+  if (dom.selectDevice && dom.selectDevice.value !== deviceId) {
+    dom.selectDevice.value = deviceId;
+  }
+
+  const dev = (state.devicesList || []).find(d => (d.id || d.device_id) === deviceId);
+  if (dev) {
+    state.deviceAdapterId = dev.adapter_id || null;
+    state.deviceModel = dev.model || dev.name || null;
+    if (state.deviceAdapterId === 'simulated') {
+      state.simulationMode = true;
+    }
+  }
+
+  // Update header badges
+  if (dom.headerModelBadge && dev) {
+    dom.headerModelBadge.textContent = dev.model || dev.id;
+  }
+  if (dom.headerSimBadge) {
+    dom.headerSimBadge.style.display = (state.simulationMode || (dev && dev.adapter_id === 'simulated')) ? 'inline-block' : 'none';
+  }
+  if (dom.headerBrandSubtitle && dev) {
+    if (state.simulationMode || dev.adapter_id === 'simulated') {
+      dom.headerBrandSubtitle.textContent = 'Virtual Memory Model • No Physical PLC Connected';
+    } else if (dev.adapter_id === 'modbus_tcp') {
+      dom.headerBrandSubtitle.textContent = 'Modbus TCP • Port 502 • Unit ID 1 • Holding & Input Registers';
+    } else {
+      dom.headerBrandSubtitle.textContent = 'MC Protocol 3E / TCP • Port 5010 • Binary Frame Monitoring';
+    }
+  }
+
+  // Reset tiles & analog metrics for clean device transition
+  resetAllTiles();
+  if (dev && dev.id === 'melsec_q03') {
+    state.hasCustomTableBuilt = false;
+    buildDeviceTable();
+  }
+  if (dom.analogGrid) {
+    dom.analogGrid.innerHTML = '<div class="analog-empty-state">Loading telemetry for selected device...</div>';
+  }
+  if (dom.overviewAnalogGrid) {
+    dom.overviewAnalogGrid.innerHTML = '<div class="analog-empty-state">Loading telemetry...</div>';
+  }
+
+  state.lastReadingTs = null;
+  state.lastPayload = null;
+  state.isStale = false;
+  hideStaleBanner();
+
+  addHistoryItem('system', 'info', `Target PLC device selected: ${dev ? dev.name : deviceId} [${deviceId}]`);
+  updateSubsystemMatrix();
+
+  if (state.localAgentActive) {
+    pollLocalAgent();
+  }
+}
+
+function formatMetricValue(reading) {
+  const qualityStr = (reading && reading.quality) ? String(reading.quality).toUpperCase() : 'COMM_FAILURE';
+  const hasValue = reading && reading.engineering_value !== null && reading.engineering_value !== undefined;
+
+  // Handle explicit STALE quality from backend or data pipeline
+  if (qualityStr === 'STALE') {
+    if (hasValue) {
+      const val = reading.engineering_value;
+      const raw = reading.raw_value;
+      const dataType = (reading.data_type || '').toLowerCase();
+      let formatted = '';
+      if (typeof val === 'number') {
+        if (dataType === 'float32' || (!Number.isInteger(val) && typeof val === 'number')) {
+          formatted = Number(val).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 });
+        } else {
+          formatted = Number(val).toLocaleString();
+        }
+      } else {
+        formatted = String(val);
+      }
+      return {
+        valueText: formatted,
+        valClass: 'val-stale',
+        quality: 'STALE',
+        qualityClass: 'quality-stale',
+        rawText: raw !== undefined && raw !== null ? `Raw: ${raw} (Stale)` : 'Raw: — (Stale)',
+        timestamp: reading.timestamp_utc ? formatIsoShort(reading.timestamp_utc) : '—',
+      };
+    } else {
+      return {
+        valueText: '—',
+        valClass: 'val-fault',
+        quality: 'STALE',
+        qualityClass: 'quality-stale',
+        rawText: (reading && reading.error_message) ? reading.error_message : 'Telemetry Stale (Timeout)',
+        timestamp: (reading && reading.timestamp_utc) ? formatIsoShort(reading.timestamp_utc) : '—',
+      };
+    }
+  }
+
+  const isGood = qualityStr === 'GOOD' && hasValue;
+  if (!isGood) {
+    const q = qualityStr;
+    return {
+      valueText: '—',
+      valClass: 'val-fault',
+      quality: q,
+      qualityClass: (q === 'GOOD') ? 'quality-good' : (q === 'COMM_FAILURE' || q === 'BAD' ? 'quality-comm-failure' : (q === 'STALE' ? 'quality-stale' : 'quality-uncertain')),
+      rawText: (reading && reading.error_message) ? reading.error_message : (q === 'COMM_FAILURE' ? 'Communication Lost' : 'No Valid Reading'),
+      timestamp: (reading && reading.timestamp_utc) ? formatIsoShort(reading.timestamp_utc) : '—',
+    };
+  }
+
+  const val = reading.engineering_value;
+  const raw = reading.raw_value;
+  const dataType = (reading.data_type || '').toLowerCase();
+  let formatted = '';
+
+  if (typeof val === 'number') {
+    if (dataType === 'float32' || (!Number.isInteger(val) && typeof val === 'number')) {
+      formatted = Number(val).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 });
+    } else {
+      formatted = Number(val).toLocaleString();
+    }
+  } else {
+    formatted = String(val);
+  }
+
+  return {
+    valueText: formatted,
+    valClass: 'val-good',
+    quality: 'GOOD',
+    qualityClass: 'quality-good',
+    rawText: raw !== undefined && raw !== null ? `Raw: ${raw}` : 'Raw: —',
+    timestamp: reading.timestamp_utc ? formatIsoShort(reading.timestamp_utc) : '—',
+  };
+}
+
+function analogMetricCardHTML(pointId, reading, isSim) {
+  const meta = formatMetricValue(reading);
+  const units = (reading && reading.engineering_units) ? escapeHtml(reading.engineering_units) : '';
+  const desc = (reading && reading.description) ? escapeHtml(reading.description) : escapeHtml(pointId);
+  const dataType = (reading && reading.data_type) ? escapeHtml(reading.data_type.toUpperCase()) : 'NUMERIC';
+  const simBadgeHtml = isSim ? `<span class="metric-sim-badge" title="Virtual Simulated Controller Point">SIM</span>` : '';
+
+  return `
+    <div class="analog-metric-card ${meta.qualityClass}" id="metric-${escapeHtml(pointId)}" data-point="${escapeHtml(pointId)}" data-quality="${escapeHtml(meta.quality)}" role="listitem">
+      <div class="metric-header">
+        <div class="metric-title-block">
+          <span class="metric-point-id">${escapeHtml(pointId)}</span>
+          <span class="metric-desc" title="${desc}">${desc}</span>
+        </div>
+        <div class="metric-badges">
+          <span class="quality-badge ${meta.qualityClass}">${escapeHtml(meta.quality)}</span>
+          ${simBadgeHtml}
+        </div>
+      </div>
+      <div class="metric-body">
+        <span class="metric-value ${meta.valClass}">${escapeHtml(meta.valueText)}</span>
+        ${units ? `<span class="metric-unit">${units}</span>` : ''}
+      </div>
+      <div class="metric-footer">
+        <span class="metric-meta-type">${dataType}</span>
+        <span class="metric-meta-raw">${escapeHtml(meta.rawText)}</span>
+        <span class="metric-meta-ts">${escapeHtml(meta.timestamp)}</span>
+      </div>
+    </div>`;
+}
+
+function renderAnalogMetrics(numericReadings, isConnected, isSim) {
+  const points = Object.entries(numericReadings || {});
+  const count = points.length;
+
+  if (dom.analogCountBadge) {
+    dom.analogCountBadge.textContent = `${count} Point${count === 1 ? '' : 's'}`;
+  }
+
+  if (count === 0) {
+    if (dom.analogGrid) {
+      dom.analogGrid.innerHTML = `
+        <div class="analog-empty-state" role="note">
+          No analog / numeric register points configured for this controller (Discrete 1-bit profile).
+        </div>`;
+    }
+    if (dom.overviewAnalogCard) {
+      dom.overviewAnalogCard.style.display = 'none';
+    }
+    return;
+  }
+
+  const cardsHtml = points.map(([pid, reading]) => {
+    return analogMetricCardHTML(pid, reading, isSim);
+  }).join('');
+
+  if (dom.analogGrid) {
+    dom.analogGrid.innerHTML = cardsHtml;
+  }
+
+  if (dom.overviewAnalogCard && dom.overviewAnalogGrid) {
+    dom.overviewAnalogCard.style.display = '';
+    dom.overviewAnalogGrid.innerHTML = cardsHtml;
+    if (dom.overviewAnalogSub) {
+      dom.overviewAnalogSub.textContent = `${count} Analog Metric${count === 1 ? '' : 's'} • Scaled Values`;
+    }
+  }
+}
+
+function renderDeviceTable(readings, activeDev) {
+  if (!dom.ioTableBody) return;
+  const isStandardQ = !activeDev || activeDev.id === 'melsec_q03';
+
+  if (isStandardQ && !state.hasCustomTableBuilt) {
+    return;
+  }
+
+  const points = Object.entries(readings || {});
+  if (points.length === 0) return;
+
+  state.hasCustomTableBuilt = !isStandardQ;
+  const nowTs = formatTimestamp(new Date());
+
+  dom.ioTableBody.innerHTML = points.map(([pid, r]) => {
+    const isBool = (r.data_type || '').toLowerCase() === 'boolean' || pid.startsWith('X') || pid.startsWith('Y');
+    const isGood = r.quality === 'GOOD';
+    const desc = r.description || pid;
+    const addr = r.device_address || pid;
+    const type = (r.data_type || (isBool ? 'BOOLEAN' : 'INT16')).toUpperCase();
+
+    if (isBool) {
+      const bit = normalizeBitValue(isGood ? r.raw_value : null);
+      let stateClass = 'unknown', stateText = 'UNKNOWN', rawText = '—', barClass = 'signal-bar';
+      if (bit === 1) {
+        stateClass = 'on'; stateText = 'ON'; rawText = '1 (Active)'; barClass = 'signal-bar active';
+      } else if (bit === 0) {
+        stateClass = 'off'; stateText = 'OFF'; rawText = '0 (Inactive)';
+      } else if (r.quality === 'COMM_FAILURE') {
+        stateText = 'COMM FAIL'; rawText = r.error_message || 'Comms Lost';
+      }
+      return `
+        <tr id="row-${escapeHtml(pid)}" data-device="${escapeHtml(pid)}" data-kind="${pid.startsWith('X') ? 'input' : 'output'}" data-state="${stateClass}">
+          <td class="point-tag">
+            <span class="status-dot dot-${stateClass === 'on' ? 'ok' : (stateClass === 'off' ? 'off' : 'warn')}"></span>
+            <strong>${escapeHtml(pid)}</strong>
+          </td>
+          <td class="point-hex"><code>${escapeHtml(addr)}</code></td>
+          <td>${type}</td>
+          <td class="table-desc">${escapeHtml(desc)}</td>
+          <td><span class="table-state-pill ${stateClass}">${stateText}</span></td>
+          <td><code>${escapeHtml(rawText)}</code></td>
+          <td><div class="signal-bar-wrap"><div class="${barClass}"></div></div></td>
+          <td class="point-ts mono">${isGood ? nowTs : '—'}</td>
+        </tr>`;
+    } else {
+      const meta = formatMetricValue(r);
+      const units = r.engineering_units ? ` ${r.engineering_units}` : '';
+      const displayVal = meta.valueText !== '—' ? `${meta.valueText}${units}` : '—';
+      return `
+        <tr id="row-${escapeHtml(pid)}" data-device="${escapeHtml(pid)}" data-kind="analog" data-state="${meta.quality === 'GOOD' ? 'on' : 'unknown'}">
+          <td class="point-tag">
+            <span class="status-dot dot-${meta.quality === 'GOOD' ? 'ok' : 'warn'}"></span>
+            <strong>${escapeHtml(pid)}</strong>
+          </td>
+          <td class="point-hex"><code>${escapeHtml(addr)}</code></td>
+          <td><span class="metric-meta-type">${type}</span></td>
+          <td class="table-desc">${escapeHtml(desc)}</td>
+          <td><span class="table-state-pill ${meta.quality === 'GOOD' ? 'on' : 'unknown'}">${escapeHtml(displayVal)}</span></td>
+          <td><code>${escapeHtml(meta.rawText)}</code></td>
+          <td><span class="quality-badge ${meta.qualityClass}">${escapeHtml(meta.quality)}</span></td>
+          <td class="point-ts mono">${escapeHtml(meta.timestamp)}</td>
+        </tr>`;
+    }
+  }).join('');
+}
+
+function handleLocalAgentTelemetry(data, activeDev) {
+  if (!data) return;
+
+  if (data.simulation_mode !== undefined) {
+    state.simulationMode = Boolean(data.simulation_mode);
+  }
+
+  const isSim = state.simulationMode || (activeDev && activeDev.adapter_id === 'simulated');
+
+  // Update simulation badge in header and brand subtitle
+  if (dom.headerSimBadge) {
+    dom.headerSimBadge.style.display = isSim ? 'inline-block' : 'none';
+  }
+  if (dom.headerBrandSubtitle) {
+    if (isSim) {
+      dom.headerBrandSubtitle.textContent = 'Virtual Memory Model • No Physical PLC Connected';
+    } else if (activeDev && activeDev.adapter_id === 'modbus_tcp') {
+      dom.headerBrandSubtitle.textContent = 'Modbus TCP • Port 502 • Unit ID 1 • Holding & Input Registers';
+    } else {
+      dom.headerBrandSubtitle.textContent = 'MC Protocol 3E / TCP • Port 5010 • Binary Frame Monitoring';
+    }
+  }
+
+  const readings = data.readings || {};
+  const booleanReadings = {};
+  const numericReadings = {};
+
+  for (const [tag, reading] of Object.entries(readings)) {
+    const dataType = (reading && reading.data_type) ? String(reading.data_type).toLowerCase() : '';
+    if (dataType === 'boolean' || tag.startsWith('X') || tag.startsWith('Y')) {
+      booleanReadings[tag] = reading;
+    } else {
+      numericReadings[tag] = reading;
+    }
+  }
+
+  const inputs = {};
+  const outputs = {};
+
+  for (const tag of INPUT_DEVICES) {
+    const r = readings[tag];
+    const isGood = r && r.quality === 'GOOD';
+    inputs[tag] = isGood ? (r.raw_value !== undefined ? r.raw_value : r.engineering_value) : null;
+  }
+  for (const tag of OUTPUT_DEVICES) {
+    const r = readings[tag];
+    const isGood = r && r.quality === 'GOOD';
+    outputs[tag] = isGood ? (r.raw_value !== undefined ? r.raw_value : r.engineering_value) : null;
+  }
+
+  // Also support custom boolean tags if present
+  for (const [tag, r] of Object.entries(booleanReadings)) {
+    if (!INPUT_DEVICES.includes(tag) && !OUTPUT_DEVICES.includes(tag)) {
+      const isGood = r && r.quality === 'GOOD';
+      inputs[tag] = isGood ? (r.raw_value !== undefined ? r.raw_value : r.engineering_value) : null;
+    }
+  }
+
+  const isConnected = data.connected === true || data.status === 'online' || data.status === 'ONLINE' || data.quality === 'GOOD';
+  const nextSeq = data.sequence_number !== undefined ? data.sequence_number : (state.lastSeq !== null ? state.lastSeq + 1 : 1);
+
+  const hasX3 = readings['X3'] !== undefined;
+  const hasY20 = readings['Y20'] !== undefined;
+  state.activeDeviceHasLadderPair = hasX3 && hasY20;
+
+  const msg = {
+    type: isConnected ? 'plc_reading' : 'gateway_error',
+    gw_id: data.gateway_id || 'local-agent',
+    seq: nextSeq,
+    ts: data.timestamp_utc || data.last_read || new Date().toISOString(),
+    connected: isConnected,
+    error: isConnected ? null : (data.error || 'PLC Communication Offline'),
+    inputs,
+    outputs,
+  };
+
+  processTelemetry(msg);
+
+  // Render Analog Telemetry Metrics Cards
+  renderAnalogMetrics(numericReadings, isConnected, isSim);
+
+  // Render Diagnostics Table for active device
+  renderDeviceTable(readings, activeDev);
 }
 
 // ─── MQTT Client & Connection Lifecycle ───────────────────────────────────────
@@ -497,6 +1163,11 @@ function restoreSettings() {
 function handleConnect() {
   if (state.isDemo) {
     addHistoryItem('system', 'warn', 'Operation Blocked: Disable Demo mode before connecting to live broker.');
+    return;
+  }
+
+  if (state.dataSource === 'local') {
+    startLocalAgentMonitoring();
     return;
   }
 
@@ -602,6 +1273,10 @@ function handleConnect() {
 }
 
 function handleDisconnect() {
+  if (state.dataSource === 'local') {
+    stopLocalAgentMonitoring();
+    return;
+  }
   if (state.mqttClient) {
     state.mqttClient.end(true);
     state.mqttClient = null;
@@ -674,7 +1349,12 @@ function processTelemetry(msg) {
   if (dom.statPacketsReceived) dom.statPacketsReceived.textContent = state.stats.packetsReceived;
 
   // Monotonic sequence and duplicate / out-of-order tracking
-  if (state.lastSeq !== null) {
+  if (state.dataSource === 'local') {
+    // In local agent mode, periodic HTTP polling samples a background engine cache.
+    // Sequence jumps between polls reflect background engine loop iterations, NOT network packet loss.
+    state.lastSeq = msg.seq;
+    if (dom.metaSeqHealth) dom.metaSeqHealth.textContent = 'Local Sampled (Cache Read)';
+  } else if (state.lastSeq !== null) {
     if (msg.seq === state.lastSeq) {
       state.stats.discarded++;
       if (dom.statDiscarded) dom.statDiscarded.textContent = state.stats.discarded;
@@ -719,7 +1399,7 @@ function processTelemetry(msg) {
   if (dom.metaLastTs)    dom.metaLastTs.textContent    = formatIsoShort(msg.ts);
 
   if (msg.type === 'gateway_error' || !msg.connected) {
-    setStatusPill('plc', 'error', 'Error');
+    setStatusPill('plc', 'error', 'Offline');
     state.stats.lastFault = msg.error || 'PLC Unreachable';
     if (dom.diagLastFault) dom.diagLastFault.textContent = state.stats.lastFault;
 
@@ -735,7 +1415,11 @@ function processTelemetry(msg) {
     state.stats.heartbeats++;
     if (dom.statHeartbeats) dom.statHeartbeats.textContent = state.stats.heartbeats;
     state.lastReadingTs = new Date();
-    setStatusPill('plc', 'ok', 'Connected');
+    if (state.simulationMode || state.deviceAdapterId === 'simulated') {
+      setStatusPill('plc', 'warn', 'Simulated');
+    } else {
+      setStatusPill('plc', 'ok', 'Verified Online');
+    }
     updateSubsystemMatrix();
     return;
   }
@@ -765,7 +1449,13 @@ function processTelemetry(msg) {
   } else {
     state.lastReadingTs = (isValidTs && packetAge >= 0) ? packetDate : new Date();
     state.isStale = false;
-    setStatusPill('plc', 'ok', 'Connected');
+    if (state.isDemo || state.simulationMode || state.deviceAdapterId === 'simulated') {
+      setStatusPill('plc', 'warn', 'Simulated');
+    } else if (state.plcConnected) {
+      setStatusPill('plc', 'ok', 'Verified Online');
+    } else {
+      setStatusPill('plc', 'error', 'Offline');
+    }
     hideStaleBanner();
   }
 
@@ -787,7 +1477,11 @@ function processTelemetry(msg) {
   }
 
   if (!wasPlcConnected && state.plcConnected) {
-    addHistoryItem('system', 'info', 'PLC MC Protocol communication restored');
+    if (state.simulationMode || state.deviceAdapterId === 'simulated') {
+      addHistoryItem('system', 'info', 'Simulation telemetry stream active');
+    } else {
+      addHistoryItem('system', 'info', 'PLC MC Protocol communication verified online');
+    }
   }
 
   updateSubsystemMatrix();
@@ -946,9 +1640,28 @@ function updateLadderDiagram(inputs, outputs) {
   if (state.isDemo) {
     modeText = 'DEMO SIMULATION';
     modeClass = 'ladder-mode-badge demo';
-  } else if (state.connected && state.lastReadingTs) {
-    modeText = 'LIVE PLC SCAN';
-    modeClass = 'ladder-mode-badge live';
+    if (dom.badgeLadderVerified) dom.badgeLadderVerified.textContent = 'SIMULATED DEMO';
+    if (dom.badgeIoLadderRef) dom.badgeIoLadderRef.textContent = 'Simulated Demo Specification';
+  } else if (state.simulationMode) {
+    modeText = 'SIMULATED SCAN';
+    modeClass = 'ladder-mode-badge warn';
+    if (dom.badgeLadderVerified) dom.badgeLadderVerified.textContent = 'SIMULATED LADDER';
+    if (dom.badgeIoLadderRef) dom.badgeIoLadderRef.textContent = 'Simulated Reference Model';
+  } else if ((state.connected || state.plcConnected) && state.lastReadingTs) {
+    if (state.activeDeviceHasLadderPair === false) {
+      modeText = 'NOT MAPPED';
+      modeClass = 'ladder-mode-badge';
+      if (dom.badgeLadderVerified) dom.badgeLadderVerified.textContent = 'REFERENCE RUNG (N/A)';
+      if (dom.badgeIoLadderRef) dom.badgeIoLadderRef.textContent = 'Reference Rung (Not mapped in selected device)';
+    } else {
+      modeText = 'LIVE PLC SCAN';
+      modeClass = 'ladder-mode-badge live';
+      if (dom.badgeLadderVerified) dom.badgeLadderVerified.textContent = 'HARDWARE MONITORED';
+      if (dom.badgeIoLadderRef) dom.badgeIoLadderRef.textContent = 'Monitored Rung Specification';
+    }
+  } else {
+    if (dom.badgeLadderVerified) dom.badgeLadderVerified.textContent = 'REFERENCE MODEL';
+    if (dom.badgeIoLadderRef) dom.badgeIoLadderRef.textContent = 'Reference Rung Specification';
   }
 
   if (dom.ladderModeBadge) {
@@ -1048,10 +1761,14 @@ function updateLadderDiagram(inputs, outputs) {
   // Overview Continuity Status
   if (dom.ladderRungStatus && dom.ladderRungDot) {
     if (x3Bit === 1 && y20Bit === 1) {
-      dom.ladderRungStatus.textContent = 'Logic Continuity: Energized (Conductive Scan Path)';
+      dom.ladderRungStatus.textContent = state.simulationMode
+        ? 'Simulated Continuity: Energized (Virtual Scan Path)'
+        : 'Logic Continuity: Energized (Conductive Scan Path)';
       dom.ladderRungDot.className = 'status-dot dot-ok';
     } else if (x3Bit === 0 || y20Bit === 0) {
-      dom.ladderRungStatus.textContent = 'Logic Continuity: De-energized (Contact Open)';
+      dom.ladderRungStatus.textContent = state.simulationMode
+        ? 'Simulated Continuity: De-energized (Contact Open)'
+        : 'Logic Continuity: De-energized (Contact Open)';
       dom.ladderRungDot.className = 'status-dot';
     } else {
       dom.ladderRungStatus.textContent = 'Logic Continuity: Unknown / Awaiting Telemetry';
@@ -1064,6 +1781,7 @@ function updateLadderDiagram(inputs, outputs) {
 
 function updateActivePointCounters(inputs, outputs) {
   let onCount = 0;
+  let offCount = 0;
   let unknownCount = 0;
   const merged = { ...inputs, ...outputs };
   const allDevices = [...INPUT_DEVICES, ...OUTPUT_DEVICES];
@@ -1071,23 +1789,93 @@ function updateActivePointCounters(inputs, outputs) {
   for (const d of allDevices) {
     const bit = normalizeBitValue(merged[d]);
     if (bit === 1) onCount++;
+    else if (bit === 0) offCount++;
     else if (bit === null) unknownCount++;
   }
 
-  if (dom.metaActiveCount) dom.metaActiveCount.textContent = `${onCount} / 16 Active`;
-  if (dom.metaUnknownCount) dom.metaUnknownCount.textContent = `${unknownCount} unknown`;
+  if (dom.metaActiveCount) dom.metaActiveCount.textContent = `${onCount} / 16 ON`;
+  if (dom.metaUnknownCount) dom.metaUnknownCount.textContent = `${offCount} OFF • ${unknownCount} UNKNOWN`;
 }
 
 // ─── Subsystem Health Matrix Updates ──────────────────────────────────────────
 
 function updateSubsystemMatrix() {
+  if (state.dataSource === 'local') {
+    // 1. MQTT Broker (Bypassed / Not in Use in Local Agent Mode)
+    setSubsystemBadge('mqtt', 'off', 'NOT IN USE', 'MQTT broker unused in local agent mode');
+
+    // 2. ESP8266 Hardware Bridge (Bypassed / Not in Use in Local Agent Mode)
+    setSubsystemBadge('esp', 'off', 'NOT IN USE', 'Hardware bridge unused in local agent mode');
+
+    // 3. Telemetry Ingestion Host (Windows Local Agent)
+    if (dom.nameSubsystemGw) dom.nameSubsystemGw.textContent = 'Windows Local Agent';
+    if (dom.interfaceSubsystemGw) dom.interfaceSubsystemGw.textContent = 'REST HTTP (Port 8000)';
+
+    if (state.localAgentActive && state.agentHealthy) {
+      setSubsystemBadge('gw', 'ok', 'RUNNING', `Agent active (Uptime: ${state.agentUptime}s)`);
+    } else if (state.localAgentActive && state.stats.lastFault) {
+      setSubsystemBadge('gw', 'error', 'ERROR', state.stats.lastFault);
+    } else if (state.localAgentActive) {
+      setSubsystemBadge('gw', 'warn', 'CONNECTING', 'Establishing HTTP polling loop');
+    } else {
+      setSubsystemBadge('gw', 'off', 'STANDBY', 'Local Agent service stopped');
+    }
+
+    // 4. Target PLC Controller
+    if (dom.nameSubsystemPlc) {
+      dom.nameSubsystemPlc.textContent = state.deviceModel || 'Target PLC Controller';
+    }
+    if (dom.interfaceSubsystemPlc) {
+      dom.interfaceSubsystemPlc.textContent = (state.simulationMode || state.deviceAdapterId === 'simulated')
+        ? 'Virtual Simulation Engine'
+        : 'MC 3E / TCP (Port 5010)';
+    }
+
+    if (state.simulationMode || state.deviceAdapterId === 'simulated') {
+      setSubsystemBadge('plc', 'warn', 'SIMULATED', 'Virtual memory model (Hardware not verified)');
+    } else if (state.plcConnected) {
+      setSubsystemBadge('plc', 'ok', 'VERIFIED ONLINE', 'MC 3E physical socket active');
+    } else if (state.stats.lastFault) {
+      setSubsystemBadge('plc', 'error', 'OFFLINE', state.stats.lastFault);
+    } else {
+      setSubsystemBadge('plc', 'off', 'NOT VERIFIED', 'Awaiting hardware telemetry poll');
+    }
+
+    // Update Ladder Reference Model labels & badges
+    if (state.simulationMode) {
+      if (dom.badgeLadderVerified) dom.badgeLadderVerified.textContent = 'SIMULATED LADDER';
+      if (dom.badgeIoLadderRef) dom.badgeIoLadderRef.textContent = 'Simulated Reference Model';
+      if (dom.pairTagHeading) dom.pairTagHeading.textContent = 'REFERENCE LADDER RUNG 0001 (X3 → Y20)';
+      if (dom.pairTagSubnote) dom.pairTagSubnote.textContent = 'Virtual Simulation Model: X3 → Y20 (Hardware Not Verified)';
+    } else if (state.plcConnected) {
+      if (dom.badgeLadderVerified) dom.badgeLadderVerified.textContent = 'HARDWARE MONITORED';
+      if (dom.badgeIoLadderRef) dom.badgeIoLadderRef.textContent = 'Monitored Rung Specification';
+      if (dom.pairTagHeading) dom.pairTagHeading.textContent = 'LIVE LADDER RUNG 0001 (X3 → Y20)';
+      if (dom.pairTagSubnote) dom.pairTagSubnote.textContent = 'Monitored PLC Rung: X3 Input Contact → Y20 Output Coil';
+    } else {
+      if (dom.badgeLadderVerified) dom.badgeLadderVerified.textContent = 'REFERENCE MODEL';
+      if (dom.badgeIoLadderRef) dom.badgeIoLadderRef.textContent = 'Reference Rung Specification';
+      if (dom.pairTagHeading) dom.pairTagHeading.textContent = 'REFERENCE LADDER RUNG 0001 (X3 → Y20)';
+      if (dom.pairTagSubnote) dom.pairTagSubnote.textContent = 'Autonomous Scan Reference: X3 → Y20 (Hardware Not Verified)';
+    }
+
+    return;
+  }
+
+  // ─── MQTT Broker Data Source Mode ───
+  if (dom.labelPillGw) dom.labelPillGw.textContent = 'GW';
+  if (dom.nameSubsystemGw) dom.nameSubsystemGw.textContent = 'Python Gateway Daemon';
+  if (dom.interfaceSubsystemGw) dom.interfaceSubsystemGw.textContent = 'Serial COM / RS-232 (115.2k)';
+  if (dom.nameSubsystemPlc) dom.nameSubsystemPlc.textContent = 'Mitsubishi Q03UDECPU';
+  if (dom.interfaceSubsystemPlc) dom.interfaceSubsystemPlc.textContent = 'MC 3E / TCP (5010)';
+
   // 1. PLC Subsystem
   if (state.plcConnected) {
-    setSubsystemBadge('plc', 'ok', 'COMMUNICATING', 'MC 3E protocol link online');
+    setSubsystemBadge('plc', 'ok', 'VERIFIED ONLINE', 'MC 3E protocol link online');
   } else if (state.connected && state.stats.lastFault) {
-    setSubsystemBadge('plc', 'error', 'FAULT', state.stats.lastFault);
+    setSubsystemBadge('plc', 'error', 'OFFLINE', state.stats.lastFault);
   } else {
-    setSubsystemBadge('plc', 'warn', 'UNVERIFIED', 'Awaiting gateway handshake');
+    setSubsystemBadge('plc', 'off', 'NOT VERIFIED', 'Awaiting gateway handshake');
   }
 
   // 2. Host Gateway
@@ -1096,14 +1884,14 @@ function updateSubsystemMatrix() {
   } else if (state.isStale) {
     setSubsystemBadge('gw', 'warn', 'STALE', 'No serial stream >15s');
   } else {
-    setSubsystemBadge('gw', 'warn', 'UNKNOWN', 'Daemon not verified');
+    setSubsystemBadge('gw', 'off', 'STANDBY', 'Daemon not verified');
   }
 
   // 3. Edge Bridge (ESP8266)
   if (state.espOnline) {
     setSubsystemBadge('esp', 'ok', 'ONLINE', 'Wi-Fi MQTT bridge active');
   } else {
-    setSubsystemBadge('esp', 'warn', 'UNKNOWN', 'Awaiting bridge status');
+    setSubsystemBadge('esp', 'off', 'STANDBY', 'Awaiting bridge heartbeat');
   }
 
   // 4. Broker
@@ -1132,7 +1920,7 @@ function setSubsystemBadge(system, level, badgeText, detailText) {
   const detailElem = detailMap[system];
 
   if (badgeElem) {
-    badgeElem.className = `node-badge ${level}`;
+    badgeElem.className = level && level !== 'off' ? `node-badge ${level}` : 'node-badge';
     badgeElem.textContent = badgeText;
   }
   if (detailElem && detailText) {
@@ -1168,6 +1956,34 @@ function markAllStale() {
       row.dataset.state = 'stale';
       const pill = row.querySelector('.table-state-pill');
       if (pill) { pill.className = 'table-state-pill unknown'; pill.textContent = 'STALE'; }
+      const qBadge = row.querySelector('.quality-badge');
+      if (qBadge) {
+        qBadge.className = 'quality-badge quality-stale';
+        qBadge.textContent = 'STALE';
+      }
+    }
+  });
+
+  // Mutate visible analog metric cards to STALE without waiting for next poll
+  document.querySelectorAll('.analog-metric-card').forEach(card => {
+    card.classList.remove('quality-good', 'quality-bad', 'quality-comm-failure', 'quality-uncertain');
+    card.classList.add('quality-stale');
+    card.dataset.quality = 'STALE';
+
+    const qBadge = card.querySelector('.quality-badge');
+    if (qBadge) {
+      qBadge.className = 'quality-badge quality-stale';
+      qBadge.textContent = 'STALE';
+    }
+
+    const valElem = card.querySelector('.metric-value');
+    if (valElem && valElem.textContent.trim() !== '—') {
+      valElem.className = 'metric-value val-stale';
+    }
+
+    const rawElem = card.querySelector('.metric-meta-raw');
+    if (rawElem && !rawElem.textContent.includes('(Stale)')) {
+      rawElem.textContent = `${rawElem.textContent.trim()} (Stale)`;
     }
   });
 
@@ -1193,6 +2009,8 @@ function markAllStale() {
   }
 
   updateFreshnessDisplays('stale', 'STALE (>15s)', 'Telemetry timeout');
+  if (dom.metaActiveCount) dom.metaActiveCount.textContent = '0 / 16 ON';
+  if (dom.metaUnknownCount) dom.metaUnknownCount.textContent = '0 OFF • 16 UNKNOWN (STALE)';
 }
 
 function startAgeTimer() {
@@ -1209,7 +2027,7 @@ function startAgeTimer() {
     if (dom.metaDataAge)  dom.metaDataAge.textContent  = formattedAge;
     if (dom.navHeaderAge) dom.navHeaderAge.textContent = `Age: ${formattedAge}`;
 
-    if (ageMs > STALE_THRESHOLD_MS && !state.isStale && (state.connected || state.isDemo)) {
+    if (ageMs > STALE_THRESHOLD_MS && !state.isStale && (state.connected || state.isDemo || state.localAgentActive || state.plcConnected)) {
       state.isStale = true;
       if (state.lastPayload) {
         showStaleBanner();
@@ -1256,10 +2074,11 @@ function setStatusPill(name, level, text) {
 
   if (dot) {
     dot.className = 'status-dot';
-    if (level === 'ok')         dot.classList.add('dot-ok');
-    else if (level === 'error') dot.classList.add('dot-error');
-    else if (level === 'warn')  dot.classList.add('dot-warn');
+    if (level === 'ok')              dot.classList.add('dot-ok');
+    else if (level === 'error')      dot.classList.add('dot-error');
+    else if (level === 'warn')       dot.classList.add('dot-warn');
     else if (level === 'connecting') dot.classList.add('dot-connecting');
+    else if (level === 'off')        dot.classList.add('dot-off');
   }
   if (textElem) textElem.textContent = text;
   if (pill) pill.setAttribute('aria-label', `${name.toUpperCase()} Status: ${text}`);
@@ -1456,10 +2275,14 @@ function stopDemoMode() {
   state.demoPaused     = false;
   state.lastSeq        = null; // Reset sequence tracking for clean live session
   hideStaleBanner();
+  if (dom.headerSimBadge) dom.headerSimBadge.style.display = 'none';
+  if (dom.headerBrandSubtitle) {
+    dom.headerBrandSubtitle.textContent = 'MC Protocol 3E / TCP • Port 5010 • Binary Frame Monitoring';
+  }
   setStatusPill('mqtt', 'off', 'Disconnected');
-  setStatusPill('plc',  'off', 'Unknown');
+  setStatusPill('plc',  'off', 'Not Verified');
   setStatusPill('esp',  'off', 'Unknown');
-  setStatusPill('gw',   'off', 'Unknown');
+  setStatusPill('gw',   'off', 'Standby');
   updateSubsystemMatrix();
   updateLadderDiagram(null, null);
 }
@@ -1469,6 +2292,14 @@ function pushDemoReading() {
 
   state.demoStep++;
   state.demoSeq++;
+
+  if (dom.headerSimBadge) {
+    dom.headerSimBadge.style.display = 'inline-block';
+    dom.headerSimBadge.textContent = 'DEMO SIMULATION';
+  }
+  if (dom.headerBrandSubtitle) {
+    dom.headerBrandSubtitle.textContent = 'Offline Browser Simulation • No Hardware Connection';
+  }
 
   // Toggle X3 every 4 s; Y20 energizes in sync (ladder contact simulation)
   const tick = Math.floor(Date.now() / 4000) % 2;
@@ -1490,8 +2321,8 @@ function pushDemoReading() {
   };
 
   setStatusPill('mqtt', 'warn', 'Demo');
-  setStatusPill('plc',  'ok',   'Simulated');
-  setStatusPill('esp',  'ok',   'Simulated');
+  setStatusPill('plc',  'warn', 'Simulated');
+  setStatusPill('esp',  'warn', 'Simulated');
   setStatusPill('gw',   'ok',   'Simulated');
   processTelemetry(fakeMsg);
 }

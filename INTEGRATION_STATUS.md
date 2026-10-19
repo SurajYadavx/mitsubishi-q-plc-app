@@ -22,9 +22,9 @@ This audit assesses the end-to-end integration readiness of the 5-tier passive s
 [ Tier 3: Edge Bridge ]  NodeMCU ESP8266 (plc_monitor.ino)
        │
        ▼ (Wi-Fi Uplink — MQTT / TLS 1.2 on Port 8883)
-[ Tier 4: Cloud Broker ] HiveMQ Cloud Managed Cluster (Dedicated ACLs)
+[ Tier 4: Cloud Broker ] EMQX Cloud Serverless Cluster (Dedicated ACLs)
        │
-       ▼ (Secure WebSockets WSS on Port 8884)
+       ▼ (Secure WebSockets WSS on Port 8084)
 [ Tier 5: Web Console ]  GitHub Pages Static Client (MQTT.js Passive Subscriber)
 ```
 
@@ -38,8 +38,8 @@ The software layers (Gateway daemon, ESP8266 firmware, and Web supervisory conso
 |---|---|---|---|---|
 | **Tier 1: PLC Interface** | `gateway/src/plc_reader.py` | Complete (Read-Only) | Unit tested with mock PLC socket | `python gateway/test_unit.py` (Suite 1 & 2) |
 | **Tier 2: Host Gateway** | `gateway/gateway.py`<br>`gateway/src/serial_publisher.py` | Complete (Read-Only) | Frame schema & sequence monotonic tracking verified | `python gateway/test_unit.py` (Suites 3–7) |
-| **Tier 3: Edge Bridge** | `firmware/plc_monitor/plc_monitor.ino` | Complete (Flash-Ready) | Firmware compiles; non-blocking Wi-Fi reconnect implemented | Static inspection & syntax validation |
-| **Tier 4: Cloud MQTT** | `firmware/plc_monitor/secrets.h.example`<br>`web/index.html` | Protocol Configured | WSS 8884 subscriber & TLS 8883 publisher schemas verified | `web/test.html` (Suites 2, 7, 8) |
+| **Tier 3: Edge Bridge** | `firmware/plc_monitor/plc_monitor.ino` | Complete (Flash-Ready) | Firmware buffer expanded to 1024B; non-blocking Wi-Fi reconnect | Static inspection & syntax validation |
+| **Tier 4: Cloud MQTT** | `firmware/plc_monitor/secrets.h.example`<br>`web/index.html` | Protocol Configured | WSS 8084 subscriber & TLS 8883 publisher schemas verified | `web/test.html` (Suites 2, 7, 8) |
 | **Tier 5: Web Console** | `web/index.html`<br>`web/assets/css/style.css`<br>`web/assets/js/app.js` | Complete & Redesigned | 107 offline browser unit tests (100% pass rate) | `http://localhost:8080/test.html` |
 | **CI/CD Deployment** | `.github/workflows/deploy-pages.yml` | Validated | GitHub Actions workflow deploys `./web` artifact | Manual or push trigger to `main` |
 
@@ -95,9 +95,9 @@ The following parameters must be confirmed and configured prior to hardware powe
 | **USB COM Port** | `gateway/config/settings.ini` | `COM9` | Check Windows Device Manager when NodeMCU is plugged in. |
 | **Wi-Fi SSID** | `firmware/plc_monitor/secrets.h` | `"your_wifi_ssid_here"` | Populate from `secrets.h.example` with lab 2.4 GHz SSID. |
 | **Wi-Fi Password** | `firmware/plc_monitor/secrets.h` | `"your_wifi_password_here"` | Populate with lab Wi-Fi WPA2 pre-shared key. |
-| **HiveMQ Hostname** | `firmware/plc_monitor/secrets.h` | `"your_broker_hostname_here"` | Create free cluster at `console.hivemq.cloud` and enter URL. |
-| **Device MQTT User/Pass** | `firmware/plc_monitor/secrets.h` | `"esp8266_device_user"` | Provision credential in HiveMQ with **Publish-only** permission. |
-| **Browser MQTT User/Pass**| Web UI Settings Tab | `"browser_readonly"` | Provision separate credential in HiveMQ with **Subscribe-only** permission. |
+| **EMQX Broker Hostname** | `firmware/plc_monitor/secrets.h` | `"your_broker_hostname_here"` | Create free Serverless deployment at `emqx.com/en/cloud` and enter URL. |
+| **Device MQTT User/Pass** | `firmware/plc_monitor/secrets.h` | `"plc_monitor_device"` | Provision credential in EMQX Cloud Authentication with **Publish-only** permission. |
+| **Browser MQTT User/Pass**| Web UI Settings Tab | `"browser_readonly"` | Provision separate credential in EMQX Cloud Authentication with **Subscribe-only** permission. |
 
 ---
 
@@ -119,21 +119,21 @@ The following parameters must be confirmed and configured prior to hardware powe
 
 ---
 
-## 6. Cloud-Dependent Tasks Still Unverified (HiveMQ Provisioning)
+## 6. Cloud-Dependent Tasks Still Unverified (EMQX Cloud Serverless Provisioning)
 
-1. **HiveMQ Cloud Cluster Creation:**
-   - *Task:* Provision a free-tier Serverless cluster (100 concurrent connections, 10 GB/month data transfer).
-   - *Status:* Unverified (requires user to create account on `console.hivemq.cloud`).
+1. **EMQX Cloud Serverless Deployment Creation:**
+   - *Task:* Provision a free-tier Serverless deployment (1M free session-minutes/month, up to 100 concurrent connections).
+   - *Status:* Unverified (requires user to create account on `https://www.emqx.com/en/cloud`).
 
 2. **Role-Based Access Control (RBAC) Separation:**
-   - *Task:* In HiveMQ Access Management, define two isolated credentials:
-     1. Device Publisher: User `esp8266_device_user` &rarr; Permissions: `Publish` to `plcmon/plc-gw-01/#`. `Subscribe: Denied`.
+   - *Task:* In EMQX Cloud Console -> Authentication & Authorization, define two isolated credentials:
+     1. Device Publisher: User `plc_monitor_device` &rarr; Permissions: `Publish` to `plcmon/plc-gw-01/#`. `Subscribe: Denied`.
      2. Web Subscriber: User `browser_readonly` &rarr; Permissions: `Subscribe` to `plcmon/plc-gw-01/#`. `Publish: Denied`.
    - *Status:* Unverified (cloud account configuration).
 
-3. **Secure WebSockets (WSS) Connectivity on Port 8884:**
-   - *Task:* Connect the browser dashboard to `wss://<cluster-id>.s1.eu.hivemq.cloud:8884/mqtt` using the `browser_readonly` user.
-   - *Status:* Unverified (depends on cluster creation).
+3. **Secure WebSockets (WSS) Connectivity on Port 8084:**
+   - *Task:* Connect the browser dashboard to `wss://<deployment-host>.emqxsl.com:8084/mqtt` using the `browser_readonly` user.
+   - *Status:* Unverified (depends on deployment creation).
 
 ---
 
@@ -159,14 +159,14 @@ When the physical hardware and cloud cluster are ready, proceed strictly in this
   └─► Run: cd gateway; .\.venv\Scripts\activate; python test_plc_connection.py
   └─► Confirm: PASS - PLC TCP connection established and I/O bits read successfully.
 
-[Phase 2: HiveMQ Cloud Provisioning]
-  └─► Create cluster on console.hivemq.cloud.
-  └─► Create `esp8266_device_user` (Publish only).
-  └─► Create `browser_readonly` (Subscribe only).
+[Phase 2: EMQX Cloud Serverless Provisioning]
+  └─► Create deployment on emqx.com/en/cloud.
+  └─► Create `plc_monitor_device` (Publish only to plcmon/plc-gw-01/#).
+  └─► Create `browser_readonly` (Subscribe only to plcmon/plc-gw-01/#).
 
 [Phase 3: ESP8266 Firmware Flash]
   └─► Ensure gateway.py is STOPPED (to release COM9).
-  └─► Create `firmware/plc_monitor/secrets.h` with Wi-Fi & device credentials.
+  └─► Create `firmware/plc_monitor/secrets.h` with Wi-Fi & device credentials (port 8883).
   └─► Flash `plc_monitor.ino` at 115200 baud via Arduino IDE.
   └─► Verify in Serial Monitor: `[WiFi] Connected` and `[MQTT] Connected`.
 
@@ -176,7 +176,7 @@ When the physical hardware and cloud cluster are ready, proceed strictly in this
 
 [Phase 5: Connect Web Supervisory Console]
   └─► Open https://surajyadavx.github.io/mitsubishi-q-plc-app/ (or local server).
-  └─► Navigate to Settings tab &rarr; enter Broker URL (wss://...:8884/mqtt), username `browser_readonly`, password.
+  └─► Navigate to Settings tab &rarr; enter Broker URL (wss://...:8084/mqtt), username `browser_readonly`, password.
   └─► Click "Connect to Broker".
   └─► Verify: Path strip turns green (PLC &bull; GW &bull; BRIDGE &bull; BROKER: OK), Mode shows LIVE, and X3/Y20 update in real-time.
 ```

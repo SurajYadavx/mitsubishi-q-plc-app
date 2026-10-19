@@ -1,0 +1,168 @@
+# Universal PLC Platform — Device Registry Configuration
+# Version: 2.0.0
+#
+# NOTE: Passwords, Wi-Fi credentials, and cloud API tokens MUST NEVER be stored here.
+# Connection parameters specify only network endpoints and non-sensitive options.
+
+version: "2.0"
+
+gateway:
+  id: "plc-gw-01"
+  name: "Universal PLC Supervisory Gateway"
+  heartbeat_sec: 5.0
+  poll_interval_sec: 1.0
+
+devices:
+  # Primary Laboratory Device: Mitsubishi Electric Q-Series
+  - id: "melsec_q03"
+    name: "Laboratory Mitsubishi MELSEC-Q"
+    enabled: true
+    manufacturer: "Mitsubishi Electric"
+    model: "Q03UDECPU"
+    adapter_id: "mitsubishi_mc_3e"
+    connection:
+      host: "192.168.3.39"
+      port: 5010
+      timeout_sec: 3.0
+      frame_type: "3E"
+    poll_interval_sec: 1.0
+    points:
+      - point_id: "X0"
+        device_address: "X0"
+        data_type: "BOOLEAN"
+        description: "Input Contact 0"
+      - point_id: "X1"
+        device_address: "X1"
+        data_type: "BOOLEAN"
+        description: "Input Contact 1"
+      - point_id: "X2"
+        device_address: "X2"
+        data_type: "BOOLEAN"
+        description: "Input Contact 2"
+      - point_id: "X3"
+        device_address: "X3"
+        data_type: "BOOLEAN"
+        description: "Trigger Pushbutton Contact (Drives Y20 via Ladder)"
+      - point_id: "X4"
+        device_address: "X4"
+        data_type: "BOOLEAN"
+        description: "Input Contact 4"
+      - point_id: "X5"
+        device_address: "X5"
+        data_type: "BOOLEAN"
+        description: "Input Contact 5"
+      - point_id: "X6"
+        device_address: "X6"
+        data_type: "BOOLEAN"
+        description: "Input Contact 6"
+      - point_id: "X7"
+        device_address: "X7"
+        data_type: "BOOLEAN"
+        description: "Input Contact 7"
+      - point_id: "Y20"
+        device_address: "Y20"
+        data_type: "BOOLEAN"
+        description: "Master Output Relay (Driven by X3 via Ladder)"
+      - point_id: "Y21"
+        device_address: "Y21"
+        data_type: "BOOLEAN"
+        description: "Output Relay 21"
+      - point_id: "Y22"
+        device_address: "Y22"
+        data_type: "BOOLEAN"
+        description: "Output Relay 22"
+      - point_id: "Y23"
+        device_address: "Y23"
+        data_type: "BOOLEAN"
+        description: "Output Relay 23"
+      - point_id: "Y24"
+        device_address: "Y24"
+        data_type: "BOOLEAN"
+        description: "Output Relay 24"
+      - point_id: "Y25"
+        device_address: "Y25"
+        data_type: "BOOLEAN"
+        description: "Output Relay 25"
+      - point_id: "Y26"
+        device_address: "Y26"
+        data_type: "BOOLEAN"
+        description: "Output Relay 26"
+      - point_id: "Y27"
+        device_address: "Y27"
+        data_type: "BOOLEAN"
+        description: "Output Relay 27"
+
+  # Secondary Device (Offline / Deterministic Simulation fixture)
+  - id: "sim_cell_02"
+    name: "Secondary Cell Simulated Fixture"
+    enabled: false
+    manufacturer: "Virtual Simulation"
+    model: "SIM-Q03"
+    adapter_id: "simulated"
+    connection:
+      timeout_sec: 1.0
+    poll_interval_sec: 2.0
+    points:
+      - point_id: "cell_temp"
+        device_address: "D100"
+        data_type: "INT16"
+        scale_factor: 0.1
+        engineering_units: "°C"
+        description: "Simulated Cell Chamber Temperature"
+      - point_id: "conveyor_run"
+        device_address: "X0"
+        data_type: "BOOLEAN"
+        description: "Simulated Conveyor Run Feedback"
+
+  # Modbus TCP Controller Example (e.g., Horner OCS or generic Modbus device)
+  # NOTE: Physical Horner OCS integration requires that the controller's Cscape
+  # application is configured with Modbus TCP Slave protocol enabled on port 502,
+  # mapping %R registers to Holding Registers (40001+) and %M/%Q to Coils (00001+).
+  # Do not assume automatic support for any controller model without verified register mapping.
+  - id: "modbus_cell_01"
+    name: "Secondary Cell Modbus TCP Controller"
+    enabled: false
+    manufacturer: "Horner / Modbus Generic"
+    model: "OCS Modbus Slave"
+    adapter_id: "modbus_tcp"
+    connection:
+      host: "192.168.3.50"
+      port: 502
+      unit_id: 1
+      timeout_sec: 2.0
+      word_order: "big_endian"
+    poll_interval_sec: 1.0
+    points:
+      - point_id: "run_status"
+        device_address: "coil:0"
+        data_type: "BOOLEAN"
+        description: "Motor Run Status (Coil 0 / %M1)"
+      - point_id: "fault_alarm"
+        device_address: "di:0"
+        data_type: "BOOLEAN"
+        description: "Overload Fault Contact (Discrete Input 0 / %I1)"
+      - point_id: "line_speed_rpm"
+        device_address: "hr:0"
+        data_type: "UINT16"
+        scale_factor: 1.0
+        engineering_units: "RPM"
+        description: "Conveyor Line Speed (Holding Register 0 / %R1)"
+      - point_id: "bearing_temp_c"
+        device_address: "ir:0"
+        data_type: "INT16"
+        scale_factor: 0.1
+        engineering_units: "°C"
+        description: "Drive Bearing Temperature (Input Register 0 / %AI1)"
+      - point_id: "total_runtime_hrs"
+        device_address: "hr:10"
+        data_type: "UINT32"
+        scale_factor: 0.1
+        engineering_units: "hrs"
+        description: "Operating Hours (Holding Registers 10-11, 32-bit)"
+      - point_id: "flow_rate_lpm"
+        device_address: "hr:20"
+        data_type: "FLOAT32"
+        scale_factor: 1.0
+        engineering_units: "L/min"
+        description: "Coolant Flow Rate (Holding Registers 20-21, 32-bit Float)"
+

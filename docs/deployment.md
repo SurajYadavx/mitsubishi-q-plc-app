@@ -35,13 +35,13 @@ https://<YOUR_USERNAME>.github.io/<YOUR_REPO>/
 
 Allow 1–2 minutes for the initial deployment to complete. Verify the live page in a browser before closing commissioning.
 
-## MQTT broker CORS / WebSocket
+## MQTT broker WebSocket (WSS)
 
-HiveMQ Cloud allows WebSocket connections by default on port 8884.
-No CORS configuration is required because MQTT.js uses WebSocket — not CORS-restricted fetch.
+EMQX Cloud Serverless allows Secure WebSocket (WSS) connections by default on port 8084 with path `/mqtt`.
+No CORS configuration is required because MQTT.js uses standard WebSocket — not CORS-restricted HTTP fetch.
 
-The browser connects directly to the broker using the read-only credentials.
-The broker must allow WebSocket connections on its public hostname.
+The browser connects directly to the broker using dedicated read-only credentials (`browser_readonly`).
+The broker must allow WebSocket connections on its public hostname (`wss://<cluster-id>.emqxsl.com:8084/mqtt`).
 
 ## Security checklist before deploying
 

@@ -56,35 +56,39 @@ Tools menu:
 ```cpp
 #define WIFI_SSID       "YourNetworkName"
 #define WIFI_PASSWORD   "YourWiFiPassword"
-#define MQTT_HOST       "xxxx.s1.eu.hivemq.cloud"
+#define MQTT_HOST       "xxxxxx.emqxsl.com"
 #define MQTT_PORT       8883
-#define MQTT_USER       "esp8266_device_user"
+#define MQTT_USER       "plc_monitor_device"
 #define MQTT_PASS       "your_device_password"
 #define MQTT_CLIENT_ID  "nodemcu-plc-01"
 ```
 
 `secrets.h` is in `.gitignore` and must never be committed.
 
-## HiveMQ Cloud Broker Setup
+## EMQX Cloud Serverless Broker Setup
 
-1. Go to https://console.hivemq.cloud and create a free account
-2. Create a new cluster (free tier: 100 connections, 10 GB/month)
-3. Note the **Hostname**, e.g. `abc123.s1.eu.hivemq.cloud`
-4. Under **Access Management**, create two credentials:
+1. Go to https://cloud.emqx.com and create an EMQX Cloud deployment
+2. Copy the deployment **Hostname**, e.g. `xxxxxx.emqxsl.com`
+3. Under **Authentication → Password-Based**, create credentials:
 
 | Username | Role | Used by |
 |---|---|---|
-| `esp8266_device_user` | Publish to `plcmon/#` | ESP8266 firmware |
+| `plc_monitor_device` | Publish to `plcmon/#` | ESP8266 firmware |
 | `browser_readonly` | Subscribe to `plcmon/#` only | GitHub Pages frontend |
 
-5. HiveMQ Cloud enables TLS by default:
-   - ESP8266 → port **8883** (MQTT/TLS)
-   - Browser → port **8884** (MQTT over WebSocket/TLS)
+4. Under **Authorization (ACL)**, enforce topic permissions:
+   - `plc_monitor_device`: Allow Publish on `plcmon/#`, Deny Subscribe.
+   - `browser_readonly`: Allow Subscribe on `plcmon/#`, Deny Publish.
 
-> **Note on `setInsecure()`:** The current firmware uses `wifiClient.setInsecure()` which
-> skips TLS certificate verification. This is acceptable for initial testing on a trusted
-> network but should be upgraded to `setCACert()` with HiveMQ's CA certificate for
-> production use. See the TODO comment in `plc_monitor.ino`.
+5. EMQX Cloud Serverless ports:
+   - ESP8266 → port **8883** (MQTT over TLS)
+   - Browser → port **8084** (Secure WebSockets WSS with path `/mqtt`)
+
+> **Note on `setInsecure()`:** The firmware currently uses `wifiClient.setInsecure()` which
+> enables TLS 1.2 traffic encryption to EMQX port 8883 while skipping root CA certificate
+> verification. This prevents ESP8266 heap memory exhaustion during the handshake.
+> For strict certificate pinning in high-security environments, the downloaded EMQX root CA
+> certificate can be loaded via `setTrustAnchor(&cert)`.
 
 ## Flashing
 
@@ -99,7 +103,7 @@ Tools menu:
 [SYS] PLC Monitor firmware starting…
 [WiFi] Connecting…
 [WiFi] Connected, IP: 192.168.1.x
-[MQTT] Connecting to abc123.s1.eu.hivemq.cloud:8883
+[MQTT] Connecting to abc123.emqxsl.com:8883
 [MQTT] Connected
 ```
 

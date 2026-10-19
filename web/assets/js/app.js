@@ -164,6 +164,11 @@ function cacheDomRefs() {
     ladderRungDot:      $('ladder-rung-dot'),
     miniEventList:      $('mini-event-list'),
     btnGotoEvents:      $('btn-goto-events'),
+    btnGotoIo:          $('btn-goto-io'),
+    overviewTileX3:     $('overview-tile-x3'),
+    overviewBadgeX3:    $('overview-badge-x3'),
+    overviewTileY20:    $('overview-tile-y20'),
+    overviewBadgeY20:   $('overview-badge-y20'),
 
     // Ladder Contact Visuals (PLC I/O Tab)
     ladderIoCard:       $('ladder-io-card'),
@@ -353,6 +358,9 @@ function setupEventListeners() {
   if (dom.btnGotoEvents) {
     dom.btnGotoEvents.addEventListener('click', () => switchTab('events'));
   }
+  if (dom.btnGotoIo) {
+    dom.btnGotoIo.addEventListener('click', () => switchTab('io'));
+  }
 
   // I/O View Switcher
   if (dom.btnViewCards) {
@@ -392,7 +400,7 @@ function setupEventListeners() {
   // Demo Simulation Scenario Actions
   if (dom.btnDemoPause)  dom.btnDemoPause.addEventListener('click', toggleDemoPause);
   if (dom.btnDemoReset)  dom.btnDemoReset.addEventListener('click', resetDemoSimulation);
-  document.querySelectorAll('.demo-scenario-pill').forEach(btn => {
+  document.querySelectorAll('.demo-scenario-pill, .scenario-btn').forEach(btn => {
     btn.addEventListener('click', () => setDemoScenario(btn.dataset.scenario));
   });
   if (dom.selectDemoScenario) {
@@ -838,27 +846,43 @@ function renderDeviceTiles(devices, kind) {
 
   for (const device of expectedList) {
     const tile = document.getElementById(`tile-${device}`);
-    if (!tile) continue;
-
     const hasKey = devices && Object.prototype.hasOwnProperty.call(devices, device);
     const rawVal = hasKey ? devices[device] : undefined;
     const bit = normalizeBitValue(rawVal);
 
-    tile.classList.remove('loading');
-    const badge = tile.querySelector('.tile-state-badge');
+    if (tile) {
+      tile.classList.remove('loading');
+      const badge = tile.querySelector('.tile-state-badge');
 
-    if (bit === 1) {
-      tile.dataset.state = 'on';
-      if (badge) badge.textContent = 'ON';
-      tile.setAttribute('aria-label', `${device}: ON`);
-    } else if (bit === 0) {
-      tile.dataset.state = 'off';
-      if (badge) badge.textContent = 'OFF';
-      tile.setAttribute('aria-label', `${device}: OFF`);
-    } else {
-      tile.dataset.state = 'unknown';
-      if (badge) badge.textContent = 'UNKNOWN';
-      tile.setAttribute('aria-label', `${device}: UNKNOWN`);
+      if (bit === 1) {
+        tile.dataset.state = 'on';
+        if (badge) badge.textContent = 'ON';
+        tile.setAttribute('aria-label', `${device}: ON`);
+      } else if (bit === 0) {
+        tile.dataset.state = 'off';
+        if (badge) badge.textContent = 'OFF';
+        tile.setAttribute('aria-label', `${device}: OFF`);
+      } else {
+        tile.dataset.state = 'unknown';
+        if (badge) badge.textContent = 'UNKNOWN';
+        tile.setAttribute('aria-label', `${device}: UNKNOWN`);
+      }
+    }
+
+    const quickBit = document.getElementById(`quick-bit-${device}`);
+    if (quickBit) {
+      const isVerified = device === 'X3' || device === 'Y20';
+      const baseClass = isVerified ? 'quick-bit verified-bit' : 'quick-bit';
+      if (bit === 1) {
+        quickBit.className = `${baseClass} on`;
+        quickBit.title = `${device}: ON (1)`;
+      } else if (bit === 0) {
+        quickBit.className = `${baseClass} off`;
+        quickBit.title = `${device}: OFF (0)`;
+      } else {
+        quickBit.className = `${baseClass} unknown`;
+        quickBit.title = `${device}: UNKNOWN`;
+      }
     }
   }
 }
@@ -934,6 +958,37 @@ function updateLadderDiagram(inputs, outputs) {
   if (dom.ladderIoModeBadge) {
     dom.ladderIoModeBadge.textContent = modeText;
     dom.ladderIoModeBadge.className = modeClass;
+  }
+
+  // Update Overview verified pair tiles
+  const tileX3 = dom.overviewTileX3 || document.getElementById('overview-tile-x3');
+  const badgeX3 = dom.overviewBadgeX3 || document.getElementById('overview-badge-x3');
+  if (tileX3 && badgeX3) {
+    if (x3Bit === 1) {
+      tileX3.className = 'primary-signal-tile input-signal on';
+      badgeX3.textContent = 'ON';
+    } else if (x3Bit === 0) {
+      tileX3.className = 'primary-signal-tile input-signal off';
+      badgeX3.textContent = 'OFF';
+    } else {
+      tileX3.className = 'primary-signal-tile input-signal unknown';
+      badgeX3.textContent = 'UNKNOWN';
+    }
+  }
+
+  const tileY20 = dom.overviewTileY20 || document.getElementById('overview-tile-y20');
+  const badgeY20 = dom.overviewBadgeY20 || document.getElementById('overview-badge-y20');
+  if (tileY20 && badgeY20) {
+    if (y20Bit === 1) {
+      tileY20.className = 'primary-signal-tile output-signal on';
+      badgeY20.textContent = 'ON';
+    } else if (y20Bit === 0) {
+      tileY20.className = 'primary-signal-tile output-signal off';
+      badgeY20.textContent = 'OFF';
+    } else {
+      tileY20.className = 'primary-signal-tile output-signal unknown';
+      badgeY20.textContent = 'UNKNOWN';
+    }
   }
 
   // Helper to update contact X3 display
@@ -1115,6 +1170,27 @@ function markAllStale() {
       if (pill) { pill.className = 'table-state-pill unknown'; pill.textContent = 'STALE'; }
     }
   });
+
+  document.querySelectorAll('.quick-bit').forEach(qb => {
+    if (!qb.classList.contains('unknown')) {
+      const isVerified = qb.classList.contains('verified-bit');
+      qb.className = isVerified ? 'quick-bit verified-bit stale' : 'quick-bit stale';
+    }
+  });
+
+  const tileX3 = dom.overviewTileX3 || document.getElementById('overview-tile-x3');
+  const badgeX3 = dom.overviewBadgeX3 || document.getElementById('overview-badge-x3');
+  if (tileX3 && badgeX3 && tileX3.classList.contains('on')) {
+    tileX3.className = 'primary-signal-tile input-signal stale';
+    badgeX3.textContent = 'STALE';
+  }
+
+  const tileY20 = dom.overviewTileY20 || document.getElementById('overview-tile-y20');
+  const badgeY20 = dom.overviewBadgeY20 || document.getElementById('overview-badge-y20');
+  if (tileY20 && badgeY20 && tileY20.classList.contains('on')) {
+    tileY20.className = 'primary-signal-tile output-signal stale';
+    badgeY20.textContent = 'STALE';
+  }
 
   updateFreshnessDisplays('stale', 'STALE (>15s)', 'Telemetry timeout');
 }
@@ -1515,7 +1591,7 @@ function updatePauseButtonUI() {
 }
 
 function updateDemoScenarioUI(scenario) {
-  document.querySelectorAll('.demo-scenario-pill').forEach(btn => {
+  document.querySelectorAll('.demo-scenario-pill, .scenario-btn').forEach(btn => {
     const isTarget = btn.dataset.scenario === scenario;
     btn.classList.toggle('active', isTarget);
     btn.setAttribute('aria-pressed', isTarget ? 'true' : 'false');

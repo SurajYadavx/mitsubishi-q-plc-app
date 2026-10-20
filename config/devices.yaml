@@ -166,3 +166,9 @@ devices:
         engineering_units: "L/min"
         description: "Coolant Flow Rate (Holding Registers 20-21, 32-bit Float)"
 
+
+serial:
+  port: COM10
+  baud_rate: 115200
+  timeout_sec: 1.0
+  ack_timeout_sec: 5.0

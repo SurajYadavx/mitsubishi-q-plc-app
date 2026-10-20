@@ -1,4 +1,4 @@
-"""
+﻿"""
 Unit tests for Mitsubishi Q-Series PLC Gateway logic.
 Runs offline without hardware or live serial ports.
 """
@@ -104,7 +104,7 @@ def test_config_settings_separation():
     plc_port = cfg.getint('plc', 'port')
     serial_port = cfg.get('serial', 'port')
     assert plc_port == 5010, f"Expected PLC port 5010, got {plc_port}"
-    assert serial_port == 'COM9', f"Expected serial COM9, got {serial_port}"
+    assert serial_port == 'COM10', f"Expected serial COM10, got {serial_port}"
     assert isinstance(plc_port, int)
     assert isinstance(serial_port, str)
 

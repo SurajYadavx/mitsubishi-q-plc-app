@@ -56,6 +56,7 @@ class GatewayConfig:
     serial_port: str = "COM9"
     serial_baud: int = 115200
     serial_timeout: float = 1.0
+    serial_ack_timeout: float = 5.0
     devices: List[DeviceConfig] = field(default_factory=list)
     source_file: str = ""
 
@@ -133,6 +134,7 @@ def load_yaml_config(
     serial_port = str(serial_sec.get("port", "COM9"))
     serial_baud = int(serial_sec.get("baud_rate", 115200))
     serial_timeout = float(serial_sec.get("timeout_sec", 1.0))
+    serial_ack_timeout = float(serial_sec.get("ack_timeout_sec", 5.0))
 
     # 2. Validate devices section
     raw_devices = data.get("devices", [])
@@ -239,6 +241,7 @@ def load_yaml_config(
         serial_port=serial_port,
         serial_baud=serial_baud,
         serial_timeout=serial_timeout,
+        serial_ack_timeout=serial_ack_timeout,
         devices=devices,
         source_file=str(yaml_path),
     )
@@ -272,6 +275,7 @@ def load_legacy_ini_config(ini_path: Path) -> GatewayConfig:
     serial_port = cfg.get("serial", "port", fallback="COM9")
     serial_baud = cfg.getint("serial", "baud_rate", fallback=115200)
     serial_timeout = cfg.getfloat("serial", "timeout_sec", fallback=1.0)
+    serial_ack_timeout = cfg.getfloat("serial", "ack_timeout_sec", fallback=5.0)
 
     gateway_id = cfg.get("gateway", "id", fallback="plc-gw-01")
     heartbeat_sec = cfg.getfloat("gateway", "heartbeat_sec", fallback=5.0)
@@ -308,6 +312,7 @@ def load_legacy_ini_config(ini_path: Path) -> GatewayConfig:
         serial_port=serial_port,
         serial_baud=serial_baud,
         serial_timeout=serial_timeout,
+        serial_ack_timeout=serial_ack_timeout,
         devices=[device],
         source_file=str(ini_path),
     )

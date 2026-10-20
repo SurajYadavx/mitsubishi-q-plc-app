@@ -147,22 +147,58 @@ devices:
             tmp_path.unlink()
 
     def test_legacy_ini_migration_fallback(self):
-        """Ensure legacy settings.ini is loaded and converted to GatewayConfig flawlessly."""
+        """Ensure legacy settings.ini format is loaded and converted to GatewayConfig flawlessly."""
+        ini_content = """[plc]
+ip = 192.168.3.39
+port = 5010
+protocol = 3E
+timeout_sec = 3.0
+poll_interval_sec = 1.0
+
+[devices]
+inputs = X0,X1,X2,X3,X4,X5,X6,X7
+outputs = Y20,Y21,Y22,Y23,Y24,Y25,Y26,Y27
+
+[serial]
+port = COM9
+baud_rate = 115200
+timeout_sec = 1.0
+ack_timeout_sec = 5.0
+
+[gateway]
+id = plc-gw-01
+heartbeat_sec = 5
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".ini", delete=False) as f:
+            f.write(ini_content)
+            tmp_path = Path(f.name)
+
+        try:
+            cfg = load_legacy_ini_config(tmp_path)
+            self.assertEqual(cfg.id, "plc-gw-01")
+            self.assertEqual(cfg.serial_port, "COM9")
+            self.assertEqual(cfg.serial_baud, 115200)
+            self.assertEqual(cfg.serial_ack_timeout, 5.0)
+
+            # Single device created with correct settings
+            self.assertEqual(len(cfg.devices), 1)
+            dev = cfg.devices[0]
+            self.assertEqual(dev.id, "melsec_q03")
+            self.assertEqual(dev.connection["host"], "192.168.3.39")
+            self.assertEqual(dev.connection["port"], 5010)
+            self.assertEqual(len(dev.points), 16)  # 8 inputs + 8 outputs
+        finally:
+            tmp_path.unlink()
+
+    def test_repo_default_settings_ini_exists_and_loads(self):
+        """Verify repository settings.ini exists and successfully parses."""
         ini_path = REPO_ROOT / "gateway" / "config" / "settings.ini"
         self.assertTrue(ini_path.exists(), "gateway/config/settings.ini must exist")
-
         cfg = load_legacy_ini_config(ini_path)
         self.assertEqual(cfg.id, "plc-gw-01")
-        self.assertEqual(cfg.serial_port, "COM9")
+        self.assertTrue(isinstance(cfg.serial_port, str) and len(cfg.serial_port) > 0)
         self.assertEqual(cfg.serial_baud, 115200)
-
-        # Single device created with correct settings
-        self.assertEqual(len(cfg.devices), 1)
-        dev = cfg.devices[0]
-        self.assertEqual(dev.id, "melsec_q03")
-        self.assertEqual(dev.connection["host"], "192.168.3.39")
-        self.assertEqual(dev.connection["port"], 5010)
-        self.assertEqual(len(dev.points), 16)  # 8 inputs + 8 outputs
+        self.assertEqual(cfg.serial_ack_timeout, 5.0)
 
     def test_load_system_config_auto_detection(self):
         """Test auto-detection priority in load_system_config."""

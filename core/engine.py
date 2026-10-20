@@ -58,6 +58,7 @@ class GatewayEngine:
             baud_rate=config.serial_baud,
             timeout=config.serial_timeout,
             gateway_id=config.id,
+            ack_timeout=getattr(config, "serial_ack_timeout", 3.0),
         )
 
         self._devices: Dict[str, DeviceState] = {}

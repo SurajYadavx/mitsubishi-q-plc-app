@@ -219,6 +219,18 @@ class TestFirmwareTlsStatic(unittest.TestCase):
         self.assertIn("NTP_SERVER_2", self.source)
         self.assertIn("NTP_SERVER_3", self.source)
 
+    def test_ntp_synchronization_diagnostics_contract(self):
+        """
+        Firmware must log a readable UTC ISO 8601 timestamp ending in 'Z' and Unix epoch
+        once per synchronization event, resetting state when the clock becomes invalid.
+        """
+        self.assertIn("bool isClockSynchronized()", self.source)
+        self.assertIn("gmtime_r(&now, &timeinfo)", self.source)
+        self.assertIn("%Y-%m-%dT%H:%M:%SZ", self.source)
+        self.assertIn("[NTP] Clock synchronized: ", self.source)
+        self.assertIn("(epoch=", self.source)
+        self.assertIn("wasSynchronized = false", self.source)
+
     def test_read_only_invariants_preserved(self):
         """
         The firmware must remain strictly publish-only.
@@ -293,6 +305,76 @@ class TestProgmemSubstringAlgorithm(unittest.TestCase):
 
     def test_partial_match_then_mismatch_recovers(self):
         self.assertTrue(self._host_contains("-----BEGIN NOT-A-CERT -----BEGIN CERTIFICATE-----", "-----BEGIN CERTIFICATE-----"))
+
+
+class TestNtpSyncAlgorithm(unittest.TestCase):
+    """
+    Host-side algorithmic unit tests simulating the isClockSynchronized latch
+    and ISO 8601 UTC timestamp generation.
+    """
+
+    class ClockSyncTracker:
+        def __init__(self, threshold: int = 1700000000):
+            self.threshold = threshold
+            self.was_synchronized = False
+            self.logs: list[str] = []
+
+        def check(self, epoch: int) -> bool:
+            if epoch <= self.threshold:
+                self.was_synchronized = False
+                return False
+
+            if not self.was_synchronized:
+                self.was_synchronized = True
+                gm_time = time.gmtime(epoch)
+                iso_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", gm_time)
+                self.logs.append(f"[NTP] Clock synchronized: {iso_str} (epoch={epoch})")
+
+            return True
+
+    def test_initial_unsynchronized_state(self):
+        tracker = self.ClockSyncTracker()
+        self.assertFalse(tracker.check(0))
+        self.assertFalse(tracker.check(1600000000))
+        self.assertFalse(tracker.check(1700000000))
+        self.assertEqual(len(tracker.logs), 0)
+
+    def test_synchronization_event_logs_iso8601_utc_and_epoch(self):
+        tracker = self.ClockSyncTracker()
+        valid_epoch = 1792492155
+        self.assertTrue(tracker.check(valid_epoch))
+        self.assertEqual(len(tracker.logs), 1)
+        log = tracker.logs[0]
+        self.assertIn("[NTP] Clock synchronized: ", log)
+        self.assertIn("(epoch=1792492155)", log)
+        self.assertTrue(log.endswith(")"))
+        # Verify ISO 8601 format ending in Z
+        self.assertRegex(log, r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+    def test_single_emission_per_synchronization_event(self):
+        tracker = self.ClockSyncTracker()
+        self.assertTrue(tracker.check(1792492155))
+        self.assertEqual(len(tracker.logs), 1)
+
+        # Subsequent calls while clock remains valid must NOT emit duplicate logs
+        for epoch in [1792492156, 1792492157, 1792492160]:
+            self.assertTrue(tracker.check(epoch))
+            self.assertEqual(len(tracker.logs), 1)
+
+    def test_state_resets_if_clock_becomes_invalid(self):
+        tracker = self.ClockSyncTracker()
+        self.assertTrue(tracker.check(1792492155))
+        self.assertEqual(len(tracker.logs), 1)
+
+        # Clock drops below threshold (e.g. system time reset)
+        self.assertFalse(tracker.check(1000))
+        self.assertFalse(tracker.was_synchronized)
+        self.assertEqual(len(tracker.logs), 1)
+
+        # Re-synchronization emits a fresh diagnostic
+        self.assertTrue(tracker.check(1792492200))
+        self.assertEqual(len(tracker.logs), 2)
+        self.assertIn("(epoch=1792492200)", tracker.logs[1])
 
 
 class TestFirmwareTemplateHygiene(unittest.TestCase):

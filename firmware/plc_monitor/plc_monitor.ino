@@ -134,10 +134,31 @@ bool isCACertConfigured() {
  * Non-blocking check for NTP clock synchronization.
  * BearSSL requires accurate time to validate X.509 notBefore and notAfter dates.
  * A timestamp > 1700000000 corresponds to post-November 2023.
+ * Logs readable UTC ISO 8601 timestamp and Unix epoch once per synchronization event.
  */
 bool isClockSynchronized() {
   time_t now = time(nullptr);
-  return now > 1700000000;
+  static bool wasSynchronized = false;
+
+  if (now <= 1700000000) {
+    wasSynchronized = false;
+    return false;
+  }
+
+  if (!wasSynchronized) {
+    wasSynchronized = true;
+    struct tm timeinfo;
+    gmtime_r(&now, &timeinfo);
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
+    Serial.print("[NTP] Clock synchronized: ");
+    Serial.print(buf);
+    Serial.print(" (epoch=");
+    Serial.print((long)now);
+    Serial.println(")");
+  }
+
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,37 @@
+/*
+ * ca_cert.h.example
+ * ─────────────────
+ * Root Certificate Authority (CA) configuration for MQTT over TLS (MQTTS).
+ *
+ * INSTRUCTIONS FOR DEPLOYMENT ENGINEERS:
+ * 1. Copy this file to: firmware/plc_monitor/ca_cert.h
+ * 2. Obtain the authoritative Root CA certificate for your MQTT broker:
+ *    - EMQX Cloud: Log into https://cloud.emqx.com -> Deployment Overview ->
+ *      TLS/SSL Certificates -> Download the Root CA certificate.
+ *    - On-Premise Mosquitto / EMQX: Obtain your plant/organization's Root CA.
+ *    - CLI Inspection: Run 'openssl s_client -showcerts -connect <MQTT_HOST>:8883 </dev/null'
+ *      to inspect the server's certificate chain and identify the root issuer.
+ * 3. Replace the placeholder below with the exact PEM certificate string.
+ *
+ * SECURITY INVARIANTS:
+ * - ca_cert.h is in .gitignore and must NEVER be committed to Git.
+ * - The firmware operates strictly in FAIL-CLOSED mode: if ca_cert.h is missing,
+ *   unconfigured, or contains the placeholder string, the firmware strictly refuses
+ *   to connect to MQTT. No unverified or insecure fallback exists.
+ * - The certificate is stored in PROGMEM (Flash ROM) to preserve ESP8266 RAM.
+ * - The ESP8266 requires accurate time via NTP to validate certificate validity periods.
+ */
+
+#ifndef CA_CERT_H
+#define CA_CERT_H
+
+#include <pgmspace.h>
+
+// Replace this placeholder with your broker's authoritative Root CA in PEM format:
+static const char BROKER_ROOT_CA[] PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+PASTE_ROOT_CA_CERTIFICATE_HERE
+-----END CERTIFICATE-----
+)EOF";
+
+#endif // CA_CERT_H

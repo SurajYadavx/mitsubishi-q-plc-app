@@ -47,11 +47,12 @@ Tools menu:
 - **Flash Size:** 4MB (FS: 2MB, OTA: ~1019KB)
 - **Port:** COM9
 
-## Credentials
+## Credentials & Root CA Setup
 
+### 1. Wi-Fi and MQTT Credentials (`secrets.h`)
 1. Navigate to `firmware/plc_monitor/`
 2. Copy `secrets.h.example` → `secrets.h`
-3. Fill in your values:
+3. Fill in your network and broker parameters:
 
 ```cpp
 #define WIFI_SSID       "YourNetworkName"
@@ -61,9 +62,54 @@ Tools menu:
 #define MQTT_USER       "plc_monitor_device"
 #define MQTT_PASS       "your_device_password"
 #define MQTT_CLIENT_ID  "nodemcu-plc-01"
+
+// Optional: Override NTP servers for isolated/air-gapped industrial cells
+#define NTP_SERVER_1    "pool.ntp.org"
+#define NTP_SERVER_2    "time.nist.gov"
 ```
 
 `secrets.h` is in `.gitignore` and must never be committed.
+
+### 2. Root Certificate Authority Trust Anchor (`ca_cert.h`)
+The firmware enforces **strict fail-closed TLS 1.2 validation**. `wifiClient.setInsecure()` has been completely removed from production code. If a valid Root CA certificate is not configured, the firmware strictly refuses to connect to the MQTT broker.
+
+1. Copy `ca_cert.h.example` → `ca_cert.h`
+2. Sourcing your broker's authoritative Root CA:
+   - **EMQX Cloud Serverless:** Log into your EMQX Cloud console (`https://cloud.emqx.com`) → select your Deployment → **Overview / TLS/SSL Certificates** → download the Root CA.
+   - **On-Premise Industrial Broker (Mosquitto/EMQX):** Obtain the site's Root CA PEM from your industrial network administrator.
+   - **Command-Line Inspection:** Run:
+     ```bash
+     openssl s_client -showcerts -connect <MQTT_HOST>:8883 </dev/null
+     ```
+     Inspect the top certificate in the chain (Root CA issuer).
+3. Paste the PEM certificate string into `ca_cert.h`:
+
+```cpp
+#ifndef CA_CERT_H
+#define CA_CERT_H
+
+#include <pgmspace.h>
+
+static const char BROKER_ROOT_CA[] PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+[PASTE YOUR BROKER'S ROOT CA CERTIFICATE HERE]
+-----END CERTIFICATE-----
+)EOF";
+
+#endif // CA_CERT_H
+```
+
+`ca_cert.h` is in `.gitignore` and must never be committed.
+
+### 3. Network Clock Synchronization (NTP)
+BearSSL validates the `notBefore` and `notAfter` validity periods of the server certificate chain. Because the ESP8266 has no battery-backed RTC, it boots at epoch `0` (1970-01-01).
+- Upon Wi-Fi connection, the firmware automatically initiates non-blocking background SNTP clock synchronization (`configTime`).
+- The firmware gates MQTT connection attempts until `time(nullptr) > 1700000000` (valid modern epoch).
+- In air-gapped industrial facilities without internet access, configure `NTP_SERVER_1` in `secrets.h` to point to a local plant NTP server or the gateway laptop IP.
+
+### 4. Certificate Rotation & Maintenance
+- **Root CA Lifespan:** Pinning the authoritative **Root CA** (rather than a leaf certificate or public key) ensures leaf certificate renewals (every 60–90 days on Let's Encrypt / cloud brokers) occur transparently without firmware updates.
+- **Root CA Rollover:** When the Root CA itself approaches expiration (typically 10–25 years), update `ca_cert.h` with the new Root CA and reflash the NodeMCU.
 
 ## EMQX Cloud Serverless Broker Setup
 
@@ -81,14 +127,8 @@ Tools menu:
    - `browser_readonly`: Allow Subscribe on `plcmon/#`, Deny Publish.
 
 5. EMQX Cloud Serverless ports:
-   - ESP8266 → port **8883** (MQTT over TLS)
+   - ESP8266 → port **8883** (MQTT over TLS with Root CA validation)
    - Browser → port **8084** (Secure WebSockets WSS with path `/mqtt`)
-
-> **Note on `setInsecure()`:** The firmware currently uses `wifiClient.setInsecure()` which
-> enables TLS 1.2 traffic encryption to EMQX port 8883 while skipping root CA certificate
-> verification. This prevents ESP8266 heap memory exhaustion during the handshake.
-> For strict certificate pinning in high-security environments, the downloaded EMQX root CA
-> certificate can be loaded via `setTrustAnchor(&cert)`.
 
 ## Flashing
 

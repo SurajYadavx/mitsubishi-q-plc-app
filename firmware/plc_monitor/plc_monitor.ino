@@ -34,9 +34,29 @@
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 #include "secrets.h"   // WIFI_SSID, WIFI_PASSWORD, MQTT_HOST, MQTT_PORT,
-                        // MQTT_USER, MQTT_PASS, MQTT_CLIENT_ID
+                        // MQTT_USER, MQTT_PASS, MQTT_CLIENT_ID, (optional NTP_SERVER_*)
+
+#if __has_include("ca_cert.h")
+#include "ca_cert.h"   // BROKER_ROOT_CA (PROGMEM)
+#define CA_CERT_HEADER_FOUND 1
+#else
+#define CA_CERT_HEADER_FOUND 0
+static const char BROKER_ROOT_CA[] PROGMEM = "";
+#endif
+
+// ─── NTP Server Defaults (Configurable via secrets.h for isolated plants) ────
+#ifndef NTP_SERVER_1
+#define NTP_SERVER_1 "pool.ntp.org"
+#endif
+#ifndef NTP_SERVER_2
+#define NTP_SERVER_2 "time.nist.gov"
+#endif
+#ifndef NTP_SERVER_3
+#define NTP_SERVER_3 "time.google.com"
+#endif
 
 // ─── Topic structure ──────────────────────────────────────────────────────────
 // plcmon/{gateway_id}/telemetry   ← PLC readings
@@ -62,9 +82,40 @@ static int  bufPos = 0;
 // Timing
 static unsigned long lastStatusMs = 0;
 
-// MQTT + TLS
+// MQTT + TLS: Global lifetime for BearSSL trust anchor list and clients
+static BearSSL::X509List trustedCA;
+static bool caConfiguredAndValid = false;
+
 WiFiClientSecure  wifiClient;
 PubSubClient      mqttClient(wifiClient);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TLS Trust Anchor & Time Validation Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+/*
+ * Verifies that ca_cert.h is present, non-empty, and does not contain the default
+ * template placeholder. Security policy strictly fails closed if invalid.
+ */
+bool isCACertConfigured() {
+#if !CA_CERT_HEADER_FOUND
+  return false;
+#else
+  if (strlen_P(BROKER_ROOT_CA) == 0) return false;
+  if (strstr_P(BROKER_ROOT_CA, PSTR("PASTE_ROOT_CA_CERTIFICATE_HERE")) != nullptr) return false;
+  if (strstr_P(BROKER_ROOT_CA, PSTR("-----BEGIN CERTIFICATE-----")) == nullptr) return false;
+  return true;
+#endif
+}
+
+/*
+ * Non-blocking check for NTP clock synchronization.
+ * BearSSL requires accurate time to validate X.509 notBefore and notAfter dates.
+ * A timestamp > 1700000000 corresponds to post-November 2023.
+ */
+bool isClockSynchronized() {
+  time_t now = time(nullptr);
+  return now > 1700000000;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Wi-Fi
@@ -101,6 +152,13 @@ void connectWiFi() {
     Serial.print("[WiFi] Connected, IP: ");
     Serial.println(WiFi.localIP());
     wifiAttempting = false;
+
+    // Initiate non-blocking background SNTP clock synchronization
+    Serial.print("[NTP] Initiating clock sync via: ");
+    Serial.print(NTP_SERVER_1);
+    Serial.print(", ");
+    Serial.println(NTP_SERVER_2);
+    configTime(0, 0, NTP_SERVER_1, NTP_SERVER_2, NTP_SERVER_3);
   }
   // else: still waiting – return and let loop() come back
 }
@@ -112,7 +170,31 @@ void connectMQTT() {
   if (mqttClient.connected()) return;
   if (WiFi.status() != WL_CONNECTED) return;
 
-  Serial.print("[MQTT] Connecting to ");
+  // 1. Enforce fail-closed policy: Abort if Root CA trust anchor is missing or invalid
+  if (!caConfiguredAndValid) {
+    static unsigned long lastCaAlertMs = 0;
+    if (millis() - lastCaAlertMs >= 10000) {
+      lastCaAlertMs = millis();
+      Serial.println("[TLS] BLOCKED: Cannot connect to MQTT broker without valid Root CA trust anchor.");
+      Serial.println("[TLS] Fail-Closed Invariant: Copy ca_cert.h.example -> ca_cert.h, populate with your broker's Root CA, and reflash.");
+    }
+    return;
+  }
+
+  // 2. Enforce non-blocking NTP clock synchronization check
+  if (!isClockSynchronized()) {
+    static unsigned long lastNtpWaitMs = 0;
+    if (millis() - lastNtpWaitMs >= 5000) {
+      lastNtpWaitMs = millis();
+      time_t now = time(nullptr);
+      Serial.print("[NTP] Waiting for clock synchronization before TLS handshake... (epoch=");
+      Serial.print((long)now);
+      Serial.println(")");
+    }
+    return; // Non-blocking: loop() continues servicing serial and Wi-Fi
+  }
+
+  Serial.print("[MQTT] Connecting over TLS to ");
   Serial.print(MQTT_HOST);
   Serial.print(":");
   Serial.println(MQTT_PORT);
@@ -131,12 +213,19 @@ void connectMQTT() {
   );
 
   if (ok) {
-    Serial.println("[MQTT] Connected");
+    Serial.println("[MQTT] Connected securely (TLS 1.2 with Root CA validation)");
     // Publish immediate online status
     publishStatus("online");
   } else {
-    Serial.print("[MQTT] Failed, rc=");
-    Serial.println(mqttClient.state());
+    char sslErrBuf[128] = {0};
+    wifiClient.getLastSSLError(sslErrBuf, sizeof(sslErrBuf));
+    Serial.print("[MQTT] Connect failed, state=");
+    Serial.print(mqttClient.state());
+    if (sslErrBuf[0] != '\0') {
+      Serial.print(" | SSL Error: ");
+      Serial.print(sslErrBuf);
+    }
+    Serial.println();
   }
 }
 
@@ -240,11 +329,24 @@ void setup() {
   delay(100);
   Serial.println("\n[SYS] PLC Monitor firmware starting…");
 
-  // TLS: For EMQX Cloud Serverless (port 8883), setInsecure() enables TLS 1.2
-  // encryption without requiring root CA certificates in ESP8266 RAM.
-  // Note: setInsecure() encrypts traffic in transit but does NOT verify
-  // the broker certificate against a local trust anchor.
-  wifiClient.setInsecure();
+  // ─── TLS Root CA Trust Anchor Initialization (Strict Fail-Closed) ─────────
+  // Note: wifiClient.setInsecure() has been completely removed.
+  if (isCACertConfigured()) {
+    bool ok = trustedCA.append(BROKER_ROOT_CA);
+    if (ok) {
+      wifiClient.setTrustAnchors(&trustedCA);
+      caConfiguredAndValid = true;
+      Serial.println("[TLS] Trusted Root CA installed in BearSSL trust anchors.");
+    } else {
+      caConfiguredAndValid = false;
+      Serial.println("[TLS] CRITICAL: Failed to parse Root CA in ca_cert.h (malformed PEM). Failing closed.");
+    }
+  } else {
+    caConfiguredAndValid = false;
+    Serial.println("[TLS] CRITICAL: Trusted Root CA certificate is NOT configured in ca_cert.h.");
+    Serial.println("[TLS] Security policy enforces FAIL-CLOSED: MQTT connection will be blocked.");
+    Serial.println("[TLS] Copy firmware/plc_monitor/ca_cert.h.example -> ca_cert.h and install your broker's Root CA.");
+  }
 
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
   // PubSubClient default buffer is 256 bytes. Telemetry JSON (~255B) plus topic (26B)

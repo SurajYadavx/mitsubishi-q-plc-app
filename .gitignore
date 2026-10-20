@@ -23,6 +23,8 @@ secrets.ini
 **/secrets.ini
 secrets.h
 **/secrets.h
+ca_cert.h
+**/ca_cert.h
 secrets.*
 !*.example
 *.key

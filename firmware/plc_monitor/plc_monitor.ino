@@ -93,6 +93,29 @@ PubSubClient      mqttClient(wifiClient);
 // TLS Trust Anchor & Time Validation Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 /*
+ * Flash-safe substring search where BOTH haystack and needle reside in PROGMEM.
+ * Reads bytes strictly via pgm_read_byte() to prevent unaligned 8-bit load
+ * hardware exceptions (Exception 3) on the Xtensa flash bus.
+ */
+static bool progmem_contains_P(PGM_P haystack, PGM_P needle) {
+  if (!haystack || !needle) return false;
+  size_t nlen = strlen_P(needle);
+  if (nlen == 0) return true;
+  size_t hlen = strlen_P(haystack);
+  if (hlen < nlen) return false;
+  for (size_t i = 0; i <= hlen - nlen; i++) {
+    size_t j = 0;
+    for (; j < nlen; j++) {
+      if ((char)pgm_read_byte(haystack + i + j) != (char)pgm_read_byte(needle + j)) {
+        break;
+      }
+    }
+    if (j == nlen) return true;
+  }
+  return false;
+}
+
+/*
  * Verifies that ca_cert.h is present, non-empty, and does not contain the default
  * template placeholder. Security policy strictly fails closed if invalid.
  */
@@ -101,8 +124,8 @@ bool isCACertConfigured() {
   return false;
 #else
   if (strlen_P(BROKER_ROOT_CA) == 0) return false;
-  if (strstr_P(BROKER_ROOT_CA, PSTR("PASTE_ROOT_CA_CERTIFICATE_HERE")) != nullptr) return false;
-  if (strstr_P(BROKER_ROOT_CA, PSTR("-----BEGIN CERTIFICATE-----")) == nullptr) return false;
+  if (progmem_contains_P(BROKER_ROOT_CA, PSTR("PASTE_ROOT_CA_CERTIFICATE_HERE"))) return false;
+  if (!progmem_contains_P(BROKER_ROOT_CA, PSTR("-----BEGIN CERTIFICATE-----"))) return false;
   return true;
 #endif
 }
@@ -121,15 +144,30 @@ bool isClockSynchronized() {
 // Wi-Fi
 // ─────────────────────────────────────────────────────────────────────────────
 void connectWiFi() {
-  if (WiFi.status() == WL_CONNECTED) return;
-
-  // Bug fix: the original implementation used a blocking delay(500) loop for
-  // up to WIFI_TIMEOUT_MS (15 s), freezing the serial receiver during reconnect.
-  // Now this function is non-blocking: it initiates (or re-initiates) the
-  // connection attempt on each call and returns immediately. The loop() will
-  // call it again on the next iteration if still not connected.
   static unsigned long wifiAttemptStart = 0;
   static bool wifiAttempting = false;
+  static bool wasConnected = false;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!wasConnected) {
+      wasConnected = true;
+      wifiAttempting = false;
+      Serial.print("[WiFi] Connected, IP: ");
+      Serial.println(WiFi.localIP());
+
+      // Initiate non-blocking background SNTP clock synchronization
+      Serial.print("[NTP] Initiating clock sync via: ");
+      Serial.print(NTP_SERVER_1);
+      Serial.print(", ");
+      Serial.println(NTP_SERVER_2);
+      configTime(0, 0, NTP_SERVER_1, NTP_SERVER_2, NTP_SERVER_3);
+    }
+    return;
+  }
+
+  // If Wi-Fi dropped after having been connected, reset wasConnected so that
+  // when Wi-Fi reconnects, IP and configTime are invoked again.
+  wasConnected = false;
 
   if (!wifiAttempting) {
     Serial.println("[WiFi] Connecting…");
@@ -146,19 +184,6 @@ void connectWiFi() {
     WiFi.disconnect();
     wifiAttempting = false;  // reset so next call restarts
     return;
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("[WiFi] Connected, IP: ");
-    Serial.println(WiFi.localIP());
-    wifiAttempting = false;
-
-    // Initiate non-blocking background SNTP clock synchronization
-    Serial.print("[NTP] Initiating clock sync via: ");
-    Serial.print(NTP_SERVER_1);
-    Serial.print(", ");
-    Serial.println(NTP_SERVER_2);
-    configTime(0, 0, NTP_SERVER_1, NTP_SERVER_2, NTP_SERVER_3);
   }
   // else: still waiting – return and let loop() come back
 }
@@ -184,12 +209,27 @@ void connectMQTT() {
   // 2. Enforce non-blocking NTP clock synchronization check
   if (!isClockSynchronized()) {
     static unsigned long lastNtpWaitMs = 0;
+    static unsigned long ntpWaitStart = 0;
+    static unsigned long lastNtpWarnMs = 0;
+
+    if (ntpWaitStart == 0) {
+      ntpWaitStart = millis();
+    }
+
     if (millis() - lastNtpWaitMs >= 5000) {
       lastNtpWaitMs = millis();
       time_t now = time(nullptr);
       Serial.print("[NTP] Waiting for clock synchronization before TLS handshake... (epoch=");
       Serial.print((long)now);
       Serial.println(")");
+
+      // Rate-limited warning after 30 seconds of waiting without sync
+      if (millis() - ntpWaitStart >= 30000) {
+        if (lastNtpWarnMs == 0 || millis() - lastNtpWarnMs >= 15000) {
+          lastNtpWarnMs = millis();
+          Serial.println("[NTP] WARNING: Sync taking >30s. Verify UDP port 123 / DNS is not blocked by network firewall.");
+        }
+      }
     }
     return; // Non-blocking: loop() continues servicing serial and Wi-Fi
   }
@@ -361,9 +401,7 @@ void setup() {
 
 void loop() {
   // ── Maintain connections ──────────────────────────────────────────
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWiFi();
-  }
+  connectWiFi();
   if (!mqttClient.connected()) {
     connectMQTT();
   }

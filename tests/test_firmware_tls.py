@@ -201,6 +201,18 @@ class TestFirmwareTlsStatic(unittest.TestCase):
         self.assertIn("1700000000", self.source)
         self.assertIn("if (!isClockSynchronized())", self.source)
 
+    def test_wifi_ntp_transition_and_timeout_diagnostics(self):
+        """
+        Firmware must handle Wi-Fi connection transitions cleanly:
+        - connectWiFi() must track connection state (wasConnected) so configTime()
+          is invoked upon WL_CONNECTED and re-invoked on reconnection.
+        - connectMQTT() must emit a rate-limited warning after 30s of failed clock sync.
+        """
+        self.assertIn("wasConnected", self.source)
+        self.assertIn("WiFi.localIP()", self.source)
+        self.assertIn("configTime(0, 0, NTP_SERVER_1, NTP_SERVER_2, NTP_SERVER_3);", self.source)
+        self.assertIn("[NTP] WARNING: Sync taking >30s", self.source)
+
     def test_configurable_ntp_servers_supported(self):
         """Configurable NTP servers must be defined with defaults for plant overrides."""
         self.assertIn("NTP_SERVER_1", self.source)
@@ -217,6 +229,70 @@ class TestFirmwareTlsStatic(unittest.TestCase):
         prohibited_write_tokens = ["batchwrite", "randomwrite", "force_coil", "write_register"]
         for token in prohibited_write_tokens:
             self.assertNotIn(token, self.source.lower())
+
+    def test_progmem_substring_helper_and_safe_ca_validation(self):
+        """
+        Verify that progmem_contains_P is used for PROGMEM substring search with pgm_read_byte,
+        and that strstr_P is NOT called on the flash-resident BROKER_ROOT_CA.
+        """
+        self.assertIn("bool progmem_contains_P(PGM_P haystack, PGM_P needle)", self.source)
+        self.assertIn("pgm_read_byte", self.source)
+        # Verify strstr_P is no longer invoked on the PROGMEM certificate buffer
+        self.assertNotIn("strstr_P(BROKER_ROOT_CA", self.source)
+        # Verify both checks use progmem_contains_P
+        self.assertIn("progmem_contains_P(BROKER_ROOT_CA, PSTR(\"PASTE_ROOT_CA_CERTIFICATE_HERE\"))", self.source)
+        self.assertIn("progmem_contains_P(BROKER_ROOT_CA, PSTR(\"-----BEGIN CERTIFICATE-----\"))", self.source)
+
+
+class TestProgmemSubstringAlgorithm(unittest.TestCase):
+    """
+    Host-side algorithmic unit tests for the byte-matching logic of progmem_contains_P.
+    NOTE: Host-side tests validate algorithmic correctness only; hardware flash bus safety
+    on the ESP8266 is achieved by reading exclusively via pgm_read_byte().
+    """
+
+    @staticmethod
+    def _host_contains(haystack: str, needle: str) -> bool:
+        """Python mirror of the exact byte loop in progmem_contains_P."""
+        if not haystack and needle:
+            return False
+        nlen = len(needle)
+        if nlen == 0:
+            return True
+        hlen = len(haystack)
+        if hlen < nlen:
+            return False
+        for i in range(hlen - nlen + 1):
+            match = True
+            for j in range(nlen):
+                if haystack[i + j] != needle[j]:
+                    match = False
+                    break
+            if match:
+                return True
+        return False
+
+    def test_matches_at_start(self):
+        self.assertTrue(self._host_contains("-----BEGIN CERTIFICATE-----abc", "-----BEGIN CERTIFICATE-----"))
+
+    def test_matches_in_middle(self):
+        self.assertTrue(self._host_contains("abcPASTE_ROOT_CA_CERTIFICATE_HEREdef", "PASTE_ROOT_CA_CERTIFICATE_HERE"))
+
+    def test_matches_at_end(self):
+        self.assertTrue(self._host_contains("abc-----END CERTIFICATE-----", "-----END CERTIFICATE-----"))
+
+    def test_needle_not_found(self):
+        self.assertFalse(self._host_contains("-----BEGIN CERTIFICATE-----real_ca", "PASTE_ROOT_CA_CERTIFICATE_HERE"))
+
+    def test_needle_longer_than_haystack(self):
+        self.assertFalse(self._host_contains("short", "much_longer_needle"))
+
+    def test_empty_needle_and_empty_haystack(self):
+        self.assertTrue(self._host_contains("anything", ""))
+        self.assertFalse(self._host_contains("", "needle"))
+
+    def test_partial_match_then_mismatch_recovers(self):
+        self.assertTrue(self._host_contains("-----BEGIN NOT-A-CERT -----BEGIN CERTIFICATE-----", "-----BEGIN CERTIFICATE-----"))
 
 
 class TestFirmwareTemplateHygiene(unittest.TestCase):

@@ -58,6 +58,8 @@ const state = {
   
   // Independent Subsystem States
   connected:      false,      // Broker connection
+  connectionIntent: 'disconnected', // 'connected' | 'disconnected' (explicit operator intent)
+  isReconnecting: false,      // True when auto-reconnecting after link loss
   plcConnected:   false,      // PLC MC Protocol socket
   espOnline:      false,      // ESP8266 Wi-Fi bridge
   gwActive:       false,      // Python gateway telemetry stream
@@ -581,8 +583,13 @@ function setDataSource(source, autoStart = true) {
   saveSettings();
 
   if (isLocal) {
+    state.connectionIntent = 'disconnected';
+    state.isReconnecting = false;
     if (state.mqttClient) {
-      state.mqttClient.end(true);
+      try {
+        state.mqttClient.removeAllListeners();
+        state.mqttClient.end(true);
+      } catch (_) {}
       state.mqttClient = null;
       state.connected = false;
     }
@@ -1171,24 +1178,41 @@ function handleConnect() {
     return;
   }
 
-  const url    = dom.inputUrl.value.trim();
-  const user   = dom.inputUser.value.trim();
-  const pass   = dom.inputPass.value;
-  const prefix = dom.inputTopic.value.trim() || 'plcmon/plc-gw-01';
+  // 1. Guard against duplicate MQTT client instances:
+  // If an active, connecting, or reconnecting client exists, terminate and detach it cleanly first.
+  if (state.mqttClient) {
+    console.warn('[MQTT] Terminating prior MQTT client session before establishing new connection');
+    try {
+      state.mqttClient.removeAllListeners();
+      state.mqttClient.end(true);
+    } catch (_) {}
+    state.mqttClient = null;
+  }
+
+  const url       = dom.inputUrl ? dom.inputUrl.value.trim() : '';
+  const user      = dom.inputUser ? dom.inputUser.value.trim() : '';
+  const pass      = dom.inputPass ? dom.inputPass.value : '';
+  const rawPrefix = dom.inputTopic ? dom.inputTopic.value.trim() : '';
+  const cleanPrefix = normalizeTopicPrefix(rawPrefix, 'plcmon/plc-gw-01');
 
   if (!url) {
     alert('Please enter a valid Broker WebSocket URL (wss://...)');
-    dom.inputUrl.focus();
+    if (dom.inputUrl) dom.inputUrl.focus();
     return;
   }
 
   saveSettings();
+  state.connectionIntent = 'connected';
+  state.isReconnecting   = false;
   setMqttStatus('connecting', 'Connecting…');
-  dom.btnConnect.disabled    = true;
-  dom.btnDisconnect.disabled = false;
+  if (dom.btnConnect)    dom.btnConnect.disabled    = true;
+  if (dom.btnDisconnect) dom.btnDisconnect.disabled = false;
 
   const clientId = `qplc-web-${Math.random().toString(36).slice(2, 8)}`;
   if (dom.diagClientId) dom.diagClientId.textContent = clientId;
+
+  const topicWildcard = getSubscriptionFilter(cleanPrefix);
+  if (dom.diagSubscribedTopic) dom.diagSubscribedTopic.textContent = topicWildcard;
 
   const opts = {
     clientId,
@@ -1201,74 +1225,129 @@ function handleConnect() {
 
   // Verify MQTT library dependency
   if (typeof mqtt === 'undefined' || !mqtt || typeof mqtt.connect !== 'function') {
+    state.connectionIntent = 'disconnected';
     setMqttStatus('error', 'Library Missing');
-    addHistoryItem('comm_error', 'error', 'MQTT client library (mqtt.min.js) unavailable. Check network connection to CDN.');
-    dom.btnConnect.disabled = false;
+    const libErrMsg = 'MQTT client library (mqtt.min.js) unavailable. Check network connection to CDN.';
+    addHistoryItem('comm_error', 'error', libErrMsg);
+    state.stats.lastFault = libErrMsg;
+    if (dom.diagLastFault) dom.diagLastFault.textContent = libErrMsg;
+    if (dom.btnConnect)    dom.btnConnect.disabled    = false;
+    if (dom.btnDisconnect) dom.btnDisconnect.disabled = true;
     return;
   }
 
+  let client;
   try {
-    state.mqttClient = mqtt.connect(url, opts);
+    client = mqtt.connect(url, opts);
+    state.mqttClient = client;
   } catch (err) {
+    state.connectionIntent = 'disconnected';
     setMqttStatus('error', 'Connect failed');
     addHistoryItem('comm_error', 'error', `MQTT connection failure: ${err.message}`);
-    dom.btnConnect.disabled = false;
+    state.stats.lastFault = err.message;
+    if (dom.diagLastFault) dom.diagLastFault.textContent = err.message;
+    if (dom.btnConnect)    dom.btnConnect.disabled    = false;
+    if (dom.btnDisconnect) dom.btnDisconnect.disabled = true;
     return;
   }
 
-  state.mqttClient.on('connect', () => {
+  client.on('connect', () => {
+    // Stale client instance guard
+    if (state.mqttClient !== client) return;
+
     state.connected = true;
+    state.isReconnecting = false;
     setMqttStatus('ok', 'Connected');
-    dom.btnConnect.disabled    = true;
-    dom.btnDisconnect.disabled = false;
+    if (dom.btnConnect)    dom.btnConnect.disabled    = true;
+    if (dom.btnDisconnect) dom.btnDisconnect.disabled = false;
     addHistoryItem('system', 'info', `MQTT broker link established with ${url}`);
 
-    const topicWildcard = `${prefix}/#`;
-    if (dom.diagSubscribedTopic) dom.diagSubscribedTopic.textContent = topicWildcard;
+    client.subscribe(topicWildcard, { qos: 1 }, (err, granted) => {
+      if (state.mqttClient !== client) return;
 
-    state.mqttClient.subscribe(topicWildcard, { qos: 1 }, (err, granted) => {
       if (err) {
-        addHistoryItem('comm_error', 'error', `Subscription failed on ${topicWildcard}: ${err.message}`);
+        const subErrMsg = `Subscription failed on ${topicWildcard}: ${err.message}`;
+        state.stats.lastFault = subErrMsg;
+        if (dom.diagLastFault) dom.diagLastFault.textContent = subErrMsg;
+        addHistoryItem('comm_error', 'error', subErrMsg);
+        console.error(`[MQTT] ${subErrMsg}`);
         return;
       }
-      if (granted && granted.length > 0 && granted[0].qos === 128) {
-        addHistoryItem('comm_error', 'error',
-          `Broker ACL Rejection (QoS 128): Read-only client cannot access ${topicWildcard}. Verify credentials.`);
-        return;
+
+      if (granted && granted.length > 0) {
+        const rejected = granted.find(g => g.qos >= 128);
+        if (rejected) {
+          const aclMsg = `Broker ACL Rejection (QoS ${rejected.qos}): Read-only client cannot access ${topicWildcard}. Verify credentials and ACL rules.`;
+          state.stats.lastFault = aclMsg;
+          if (dom.diagLastFault) dom.diagLastFault.textContent = aclMsg;
+          addHistoryItem('comm_error', 'error', aclMsg);
+          console.error(`[MQTT] ${aclMsg}`);
+          return;
+        }
       }
-      addHistoryItem('system', 'info', `Subscribed to ${topicWildcard} (Read-Only)`);
+
+      const qosLevel = (granted && granted[0]) ? granted[0].qos : 1;
+      addHistoryItem('system', 'info', `Subscribed to ${topicWildcard} (Read-Only, QoS ${qosLevel})`);
+      console.info(`[MQTT] Subscribed successfully to ${topicWildcard} (QoS ${qosLevel})`);
     });
   });
 
-  state.mqttClient.on('message', (topic, payload) => {
-    handleMqttMessage(topic, payload.toString(), prefix);
+  client.on('message', (topic, payload) => {
+    if (state.mqttClient !== client) return;
+    handleMqttMessage(topic, payload.toString(), cleanPrefix);
   });
 
-  state.mqttClient.on('error', err => {
+  client.on('error', err => {
+    if (state.mqttClient !== client) return;
     state.stats.lastFault = err.message;
+    if (dom.diagLastFault) dom.diagLastFault.textContent = err.message;
     addHistoryItem('comm_error', 'error', `Broker protocol error: ${err.message}`);
     setMqttStatus('error', 'Error');
   });
 
-  state.mqttClient.on('reconnect', () => {
+  client.on('reconnect', () => {
+    if (state.mqttClient !== client) return;
+    state.connected = false;
+    state.isReconnecting = true;
     state.stats.reconnects++;
     if (dom.statReconnects) dom.statReconnects.textContent = state.stats.reconnects;
     setMqttStatus('connecting', 'Reconnecting…');
+    // Ensure button remains disabled while reconnecting to prevent duplicate client generation
+    if (dom.btnConnect)    dom.btnConnect.disabled    = true;
+    if (dom.btnDisconnect) dom.btnDisconnect.disabled = false;
     addHistoryItem('comm_error', 'warn', 'MQTT connection lost — attempting auto-reconnect');
   });
 
-  state.mqttClient.on('close', () => {
+  client.on('close', () => {
+    if (state.mqttClient !== client) return;
     state.connected = false;
-    setMqttStatus('off', 'Disconnected');
-    dom.btnConnect.disabled    = false;
-    dom.btnDisconnect.disabled = true;
-    addHistoryItem('system', 'info', 'MQTT session terminated');
+
+    if (state.connectionIntent === 'connected') {
+      // Automatic background reconnect is active: do NOT enable Connect button or show dead Disconnected status
+      state.isReconnecting = true;
+      setMqttStatus('warn', 'Reconnecting…');
+      if (dom.btnConnect)    dom.btnConnect.disabled    = true;
+      if (dom.btnDisconnect) dom.btnDisconnect.disabled = false;
+    } else {
+      // Intentionally disconnected by operator
+      state.isReconnecting = false;
+      setMqttStatus('off', 'Disconnected');
+      if (dom.btnConnect)    dom.btnConnect.disabled    = false;
+      if (dom.btnDisconnect) dom.btnDisconnect.disabled = true;
+      addHistoryItem('system', 'info', 'MQTT session terminated');
+    }
     markAllStale();
     updateSubsystemMatrix();
   });
 
-  state.mqttClient.on('offline', () => {
-    setMqttStatus('warn', 'Offline');
+  client.on('offline', () => {
+    if (state.mqttClient !== client) return;
+    state.connected = false;
+    if (state.connectionIntent === 'connected') {
+      setMqttStatus('warn', 'Reconnecting…');
+    } else {
+      setMqttStatus('warn', 'Offline');
+    }
   });
 }
 
@@ -1277,17 +1356,57 @@ function handleDisconnect() {
     stopLocalAgentMonitoring();
     return;
   }
+  state.connectionIntent = 'disconnected';
+  state.isReconnecting   = false;
   if (state.mqttClient) {
-    state.mqttClient.end(true);
+    try {
+      state.mqttClient.removeAllListeners();
+      state.mqttClient.end(true);
+    } catch (_) {}
     state.mqttClient = null;
   }
   state.connected = false;
   setMqttStatus('off', 'Disconnected');
-  dom.btnConnect.disabled    = false;
-  dom.btnDisconnect.disabled = true;
+  if (dom.btnConnect)    dom.btnConnect.disabled    = false;
+  if (dom.btnDisconnect) dom.btnDisconnect.disabled = true;
   addHistoryItem('system', 'info', 'Disconnected by operator');
   markAllStale();
   updateSubsystemMatrix();
+}
+
+// ─── MQTT Topic Normalization Helpers ─────────────────────────────────────────
+
+/**
+ * Normalizes an MQTT topic prefix string.
+ * Strips whitespace, trailing slashes, and trailing wildcard tokens ('/#', '#').
+ *
+ * Guaranteed mappings:
+ *   'plcmon/plc-gw-01'   -> 'plcmon/plc-gw-01'
+ *   'plcmon/plc-gw-01/'  -> 'plcmon/plc-gw-01'
+ *   'plcmon/plc-gw-01/#' -> 'plcmon/plc-gw-01'
+ *
+ * @param {string} raw - raw input string from UI or storage
+ * @param {string} [defaultPrefix='plcmon/plc-gw-01'] - fallback prefix if empty
+ * @returns {string} clean base topic prefix
+ */
+function normalizeTopicPrefix(raw, defaultPrefix = 'plcmon/plc-gw-01') {
+  if (!raw || typeof raw !== 'string') return defaultPrefix;
+  let p = raw.trim();
+  if (!p) return defaultPrefix;
+  p = p.replace(/[\/#\s]+$/, '');
+  return p || defaultPrefix;
+}
+
+/**
+ * Builds the canonical MQTT subscription filter from a topic prefix.
+ * Guarantees format: `<cleanPrefix>/#`.
+ *
+ * @param {string} rawPrefix
+ * @returns {string} canonical subscription filter (e.g. 'plcmon/plc-gw-01/#')
+ */
+function getSubscriptionFilter(rawPrefix) {
+  const clean = normalizeTopicPrefix(rawPrefix);
+  return `${clean}/#`;
 }
 
 // ─── MQTT Message Dispatcher ──────────────────────────────────────────────────
@@ -1303,8 +1422,12 @@ function handleMqttMessage(topic, raw, prefix) {
     return;
   }
 
-  const prefixWithSlash = `${prefix}/`;
-  if (!topic.startsWith(prefixWithSlash)) return;
+  const cleanPrefix = normalizeTopicPrefix(prefix);
+  const prefixWithSlash = `${cleanPrefix}/`;
+  if (!topic.startsWith(prefixWithSlash)) {
+    console.warn(`[MQTT] Incoming message on unhandled topic: '${topic}' (expected prefix: '${prefixWithSlash}')`);
+    return;
+  }
   const subtopic = topic.slice(prefixWithSlash.length);
 
   if (subtopic === 'status') {

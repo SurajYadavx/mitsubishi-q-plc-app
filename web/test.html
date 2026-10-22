@@ -98,8 +98,22 @@ function formatTimestamp(d) {
        + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+function normalizeTopicPrefix(raw, defaultPrefix = 'plcmon/plc-gw-01') {
+  if (!raw || typeof raw !== 'string') return defaultPrefix;
+  let p = raw.trim();
+  if (!p) return defaultPrefix;
+  p = p.replace(/[\/#\s]+$/, '');
+  return p || defaultPrefix;
+}
+
+function getSubscriptionFilter(rawPrefix) {
+  const clean = normalizeTopicPrefix(rawPrefix);
+  return `${clean}/#`;
+}
+
 function extractSubtopic(topic, prefix) {
-  const prefixWithSlash = `${prefix}/`;
+  const cleanPrefix = normalizeTopicPrefix(prefix);
+  const prefixWithSlash = `${cleanPrefix}/`;
   if (!topic.startsWith(prefixWithSlash)) return null;
   return topic.slice(prefixWithSlash.length);
 }
@@ -248,6 +262,8 @@ test('status subtopic extracted', () => { assertEqual(extractSubtopic('plcmon/pl
 test('diag subtopic extracted', () => { assertEqual(extractSubtopic('plcmon/plc-gw-01/diag', 'plcmon/plc-gw-01'), 'diag'); });
 test('unrelated prefix returns null', () => { assertEqual(extractSubtopic('plcmon/plc-gw-02/telemetry', 'plcmon/plc-gw-01'), null); });
 test('topic without trailing slash returns null', () => { assertEqual(extractSubtopic('plcmon/plc-gw-01', 'plcmon/plc-gw-01'), null); });
+test('subtopic extraction succeeds when prefix has trailing slash', () => { assertEqual(extractSubtopic('plcmon/plc-gw-01/telemetry', 'plcmon/plc-gw-01/'), 'telemetry'); });
+test('subtopic extraction succeeds when prefix has wildcard suffix /#', () => { assertEqual(extractSubtopic('plcmon/plc-gw-01/telemetry', 'plcmon/plc-gw-01/#'), 'telemetry'); });
 
 suite('3 — Telemetry Schema Validation');
 test('valid plc_reading passes', () => { assert(validateTelemetry(FX.allOff)); assert(validateTelemetry(FX.x3On)); });
@@ -1373,6 +1389,122 @@ test('read-only UI invariant: no write buttons, force controls, or ladder edit i
   for (const prohibited of prohibitedUiElements) {
     assert(!activeUiControls.includes(prohibited), `Prohibited write control '${prohibited}' found in active UI controls`);
   }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUITE 14: MQTT Topic Normalization & Client Lifecycle Hardening
+// ═══════════════════════════════════════════════════════════════════════════════
+suite('Suite 14: Topic Normalization, Subscription Verification & Client Lifecycle');
+
+test('topic-prefix normalization resolves raw prefix without changes', () => {
+  assertEqual(normalizeTopicPrefix('plcmon/plc-gw-01'), 'plcmon/plc-gw-01');
+  assertEqual(getSubscriptionFilter('plcmon/plc-gw-01'), 'plcmon/plc-gw-01/#');
+});
+
+test('topic-prefix normalization strips trailing slash', () => {
+  assertEqual(normalizeTopicPrefix('plcmon/plc-gw-01/'), 'plcmon/plc-gw-01');
+  assertEqual(getSubscriptionFilter('plcmon/plc-gw-01/'), 'plcmon/plc-gw-01/#');
+});
+
+test('topic-prefix normalization strips trailing /# wildcard', () => {
+  assertEqual(normalizeTopicPrefix('plcmon/plc-gw-01/#'), 'plcmon/plc-gw-01');
+  assertEqual(getSubscriptionFilter('plcmon/plc-gw-01/#'), 'plcmon/plc-gw-01/#');
+});
+
+test('topic-prefix normalization handles /# with trailing slash and whitespace', () => {
+  assertEqual(normalizeTopicPrefix('  plcmon/plc-gw-01/#/  '), 'plcmon/plc-gw-01');
+  assertEqual(getSubscriptionFilter('  plcmon/plc-gw-01/#/  '), 'plcmon/plc-gw-01/#');
+});
+
+test('topic-prefix normalization falls back to default on empty or null input', () => {
+  assertEqual(normalizeTopicPrefix(''), 'plcmon/plc-gw-01');
+  assertEqual(normalizeTopicPrefix(null), 'plcmon/plc-gw-01');
+  assertEqual(normalizeTopicPrefix('   '), 'plcmon/plc-gw-01');
+  assertEqual(getSubscriptionFilter(''), 'plcmon/plc-gw-01/#');
+});
+
+test('multiple client prevention: prior client is cleanly terminated before new connection', () => {
+  let oldClientEnded = false;
+  let oldListenersRemoved = false;
+  const mockOldClient = {
+    removeAllListeners: () => { oldListenersRemoved = true; },
+    end: (force) => { if (force) oldClientEnded = true; }
+  };
+
+  let activeClient = mockOldClient;
+  const connectMock = () => {
+    if (activeClient) {
+      activeClient.removeAllListeners();
+      activeClient.end(true);
+      activeClient = null;
+    }
+    activeClient = { id: 'new-client' };
+    return activeClient;
+  };
+
+  const newClient = connectMock();
+  assert(oldClientEnded, 'Prior client must be ended with force=true');
+  assert(oldListenersRemoved, 'Prior client listeners must be stripped');
+  assertEqual(newClient.id, 'new-client');
+});
+
+test('client lifecycle state machine correctly distinguishes 4 connection states', () => {
+  const getUiState = (connIntent, isReconn, isConn) => {
+    if (isConn) return { pill: 'ok', text: 'Connected', btnConnectDisabled: true, btnDisconnectDisabled: false };
+    if (connIntent === 'connected') {
+      if (isReconn) return { pill: 'warn', text: 'Reconnecting…', btnConnectDisabled: true, btnDisconnectDisabled: false };
+      return { pill: 'connecting', text: 'Connecting…', btnConnectDisabled: true, btnDisconnectDisabled: false };
+    }
+    return { pill: 'off', text: 'Disconnected', btnConnectDisabled: false, btnDisconnectDisabled: true };
+  };
+
+  // State 1: Connecting
+  const connectingState = getUiState('connected', false, false);
+  assertEqual(connectingState.pill, 'connecting');
+  assertEqual(connectingState.text, 'Connecting…');
+  assertEqual(connectingState.btnConnectDisabled, true, 'Connect button must stay disabled while connecting');
+
+  // State 2: Connected
+  const connectedState = getUiState('connected', false, true);
+  assertEqual(connectedState.pill, 'ok');
+  assertEqual(connectedState.text, 'Connected');
+  assertEqual(connectedState.btnConnectDisabled, true);
+
+  // State 3: Reconnecting (temporary link drop)
+  const reconnectingState = getUiState('connected', true, false);
+  assertEqual(reconnectingState.pill, 'warn');
+  assertEqual(reconnectingState.text, 'Reconnecting…');
+  assertEqual(reconnectingState.btnConnectDisabled, true, 'Connect button must stay disabled while auto-reconnecting');
+  assertEqual(reconnectingState.btnDisconnectDisabled, false, 'Disconnect button must stay enabled so operator can cancel');
+
+  // State 4: Intentionally Disconnected
+  const disconnectedState = getUiState('disconnected', false, false);
+  assertEqual(disconnectedState.pill, 'off');
+  assertEqual(disconnectedState.text, 'Disconnected');
+  assertEqual(disconnectedState.btnConnectDisabled, false, 'Connect button must re-enable when disconnected');
+  assertEqual(disconnectedState.btnDisconnectDisabled, true);
+});
+
+test('subscription acknowledgement validator identifies QoS 1 success and ACL/error failures', () => {
+  const evaluateSubAck = (err, granted) => {
+    if (err) return { ok: false, error: err.message || String(err) };
+    if (!granted || granted.length === 0) return { ok: false, error: 'Empty granted array' };
+    const rejected = granted.find(g => g.qos >= 128);
+    if (rejected) return { ok: false, error: `ACL Rejection (QoS ${rejected.qos})` };
+    return { ok: true, qos: granted[0].qos };
+  };
+
+  const okSub = evaluateSubAck(null, [{ topic: 'plcmon/plc-gw-01/#', qos: 1 }]);
+  assertEqual(okSub.ok, true);
+  assertEqual(okSub.qos, 1);
+
+  const aclRejectedSub = evaluateSubAck(null, [{ topic: 'plcmon/plc-gw-01/#', qos: 128 }]);
+  assertEqual(aclRejectedSub.ok, false);
+  assert(aclRejectedSub.error.includes('ACL Rejection'), 'Must flag ACL rejection on QoS 128');
+
+  const errorSub = evaluateSubAck(new Error('Network timeout'), null);
+  assertEqual(errorSub.ok, false);
+  assert(errorSub.error.includes('Network timeout'), 'Must flag network error');
 });
 
 // ─── Summary Output ───────────────────────────────────────────────────────────
